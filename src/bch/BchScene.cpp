@@ -407,53 +407,53 @@ std::vector<std::uint8_t> decodePlainTexture(const Bytes& b, std::size_t dataOff
 
                 std::uint8_t r = 255, g = 255, blue = 255, a = 255;
                 switch (format) {
-                    case 0: // RGBA8 stored ABGR little-endian
+                    case 0:
                         a = static_cast<std::uint8_t>(value & 0xff);
                         blue = static_cast<std::uint8_t>((value >> 8) & 0xff);
                         g = static_cast<std::uint8_t>((value >> 16) & 0xff);
                         r = static_cast<std::uint8_t>((value >> 24) & 0xff);
                         break;
-                    case 1: // RGB8 stored BGR
+                    case 1:
                         blue = static_cast<std::uint8_t>(value & 0xff);
                         g = static_cast<std::uint8_t>((value >> 8) & 0xff);
                         r = static_cast<std::uint8_t>((value >> 16) & 0xff);
                         break;
-                    case 2: // RGBA5551
+                    case 2:
                         a = (value & 1) ? 255 : 0;
                         r = expand5((value >> 11) & 0x1f);
                         g = expand5((value >> 6) & 0x1f);
                         blue = expand5((value >> 1) & 0x1f);
                         break;
-                    case 3: // RGB565
+                    case 3:
                         r = expand5((value >> 11) & 0x1f);
                         g = expand6((value >> 5) & 0x3f);
                         blue = expand5(value & 0x1f);
                         break;
-                    case 4: // RGBA4
+                    case 4:
                         a = expand4(value);
                         blue = expand4(value >> 4);
                         g = expand4(value >> 8);
                         r = expand4(value >> 12);
                         break;
-                    case 5: { // LA8
+                    case 5: {
                         a = static_cast<std::uint8_t>(value & 0xff);
                         const auto l = static_cast<std::uint8_t>((value >> 8) & 0xff);
                         r = g = blue = l;
                         break;
                     }
-                    case 6: // HILO8
+                    case 6:
                         r = static_cast<std::uint8_t>(value & 0xff);
                         g = static_cast<std::uint8_t>((value >> 8) & 0xff);
                         blue = 0;
                         break;
-                    case 7: r = g = blue = static_cast<std::uint8_t>(value); break; // L8
-                    case 8: r = g = blue = 255; a = static_cast<std::uint8_t>(value); break; // A8
-                    case 9: // LA4
+                    case 7: r = g = blue = static_cast<std::uint8_t>(value); break;
+                    case 8: r = g = blue = 255; a = static_cast<std::uint8_t>(value); break;
+                    case 9:
                         a = expand4(value);
                         r = g = blue = expand4(value >> 4);
                         break;
-                    case 10: r = g = blue = expand4(value); break; // L4
-                    case 11: r = g = blue = 255; a = expand4(value); break; // A4
+                    case 10: r = g = blue = expand4(value); break;
+                    case 11: r = g = blue = 255; a = expand4(value); break;
                     default: break;
                 }
                 writeRgba(out, static_cast<std::size_t>(py * width + px), r, g, blue, a);
@@ -648,7 +648,6 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
     const auto objectNameCount = u32(b, p);
     const auto objectNameOffset = u32(b, p + 4);
 
-    // Material entry names contain the texture resource used by material unit 0.
     const std::size_t materialStride = h.bc < 0x21 ? 0x58 : 0x2c;
     const std::size_t materialName0Offset = h.bc < 0x21 ? 0x48 : 0x1c;
     const std::size_t materialNameOffset = h.bc < 0x21 ? 0x54 : 0x28;
@@ -661,7 +660,6 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
         out.materials_.push_back(std::move(material));
     }
 
-    // Embedded textures. Rumble World stores Pikachu's diffuse and eye maps here.
     if (h.main + 44 <= b.size()) {
         const auto textureTable = u32(b, h.main + 36);
         const auto textureCount = std::min<std::uint32_t>(u32(b, h.main + 40), 4096);
@@ -687,16 +685,14 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
         }
     }
 
-    // Object names are stored in a radix tree. Entries begin after its 12-byte root.
     std::vector<std::string> objectNames;
     if (objectNameOffset && objectNameOffset + 12 <= b.size()) {
         std::size_t nameEntry = static_cast<std::size_t>(objectNameOffset) + 12;
-        for (std::uint32_t i = 0; i < objectNameCount && nameEntry + 8 <= b.size(); ++i, nameEntry += 8) {
-            objectNames.push_back(cstr(b, u32(b, nameEntry + 4)));
+        for (std::uint32_t i = 0; i < objectNameCount && nameEntry + 12 <= b.size(); ++i, nameEntry += 12) {
+            objectNames.push_back(cstr(b, u32(b, nameEntry + 8)));
         }
     }
 
-    // Skeleton is 0x64 bytes per bone in this BCH revision.
     p = skeletonOffset;
     for (std::uint32_t i = 0; i < skeletonCount && p + 100 <= b.size(); ++i, p += 100) {
         Bone bone;
@@ -735,10 +731,10 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
     std::vector<ObjectEntry> objects;
     objects.reserve(objectCount);
 
-    // IMPORTANT: modern BCH object entries are 0x40 bytes, not 0x38. Reading
-    // them as 0x38 shifts every mesh after the first and creates the huge
-    // stretched triangles seen in the first demo.
-    constexpr std::size_t kObjectStride = 0x40;
+    // Pokemon Rumble World uses 0x38-byte object entries. This was verified
+    // against PIKATYUU_M: both object headers resolve to valid PICA command
+    // buffers only with this stride.
+    constexpr std::size_t kObjectStride = 0x38;
     for (std::uint32_t i = 0; i < objectCount; ++i) {
         const std::size_t q = static_cast<std::size_t>(objectsOffset) + static_cast<std::size_t>(i) * kObjectStride;
         if (q + kObjectStride > b.size()) break;
@@ -834,7 +830,7 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
                     if (slot < 0 || slot >= 23) continue;
                     const int semantic = mainPermutation[static_cast<std::size_t>(slot)];
                     auto format = formats[static_cast<std::size_t>(slot)];
-                    if (semantic == 8) format.first = 1; // bone weights are always u8
+                    if (semantic == 8) format.first = 1;
                     const int componentCount = format.second + 1;
 
                     const auto values = readAttribute(b, vp, format.first, componentCount);
@@ -857,9 +853,10 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
 
                 const std::size_t maximumInfluences = skinningMode == 1 ? 4 : 1;
                 for (std::size_t k = 0; k < boneIndices.size() && k < maximumInfluences; ++k) {
-                    const auto localBone = static_cast<std::size_t>(std::max(0.0f, std::floor(boneIndices[k])));
-                    if (localBone < nodes.size() && vertex.influenceCount < 4) {
-                        vertex.bones[vertex.influenceCount++] = nodes[localBone];
+                    const int localBone = static_cast<int>(boneIndices[k]);
+                    if (localBone >= 0 && static_cast<std::size_t>(localBone) < nodes.size() &&
+                        vertex.influenceCount < 4) {
+                        vertex.bones[vertex.influenceCount++] = nodes[static_cast<std::size_t>(localBone)];
                     }
                 }
 
