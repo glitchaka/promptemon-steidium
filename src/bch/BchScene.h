@@ -49,6 +49,11 @@ struct Texture {
 struct Material {
     std::string name;
     std::string textureName;
+    float uvScaleU = 1.0f;
+    float uvScaleV = 1.0f;
+    float uvRotation = 0.0f;
+    float uvTranslateU = 0.0f;
+    float uvTranslateV = 0.0f;
 };
 
 struct Vec3Track {
