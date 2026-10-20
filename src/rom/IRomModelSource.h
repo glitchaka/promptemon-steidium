@@ -27,6 +27,8 @@ public:
     virtual const RomInfo& romInfo() const noexcept = 0;
     virtual std::string providerName() const = 0;
     virtual std::vector<ModelResource> models() const = 0;
+    virtual bool hasBch(const std::string& resourceId) const = 0;
+    virtual std::vector<std::uint8_t> extractBch(const std::string& resourceId) const = 0;
     virtual ModelPayload load(const std::string& resourceId) const = 0;
 };
 
