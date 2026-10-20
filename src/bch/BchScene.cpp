@@ -657,6 +657,28 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
         Material material;
         material.textureName = cstr(b, u32(b, mo + materialName0Offset));
         material.name = cstr(b, u32(b, mo + materialNameOffset));
+
+        const auto materialParametersOffset = u32(b, mo);
+        if (materialParametersOffset && static_cast<std::size_t>(materialParametersOffset) + 36 <= b.size()) {
+            const std::size_t coordinator0 = static_cast<std::size_t>(materialParametersOffset) + 12;
+            float scaleU = f32(b, coordinator0 + 4);
+            float scaleV = f32(b, coordinator0 + 8);
+            const float rotation = f32(b, coordinator0 + 12);
+            const float translateU = f32(b, coordinator0 + 16);
+            const float translateV = f32(b, coordinator0 + 20);
+            if (scaleU == 0.0f && scaleV == 0.0f) {
+                scaleU = 1.0f;
+                scaleV = 1.0f;
+            }
+            if (std::isfinite(scaleU) && std::isfinite(scaleV) && std::isfinite(rotation) &&
+                std::isfinite(translateU) && std::isfinite(translateV)) {
+                material.uvScaleU = scaleU;
+                material.uvScaleV = scaleV;
+                material.uvRotation = rotation;
+                material.uvTranslateU = translateU;
+                material.uvTranslateV = translateV;
+            }
+        }
         out.materials_.push_back(std::move(material));
     }
 
@@ -731,9 +753,6 @@ Scene Scene::parse(const std::vector<std::uint8_t>& modelRaw,
     std::vector<ObjectEntry> objects;
     objects.reserve(objectCount);
 
-    // Pokemon Rumble World uses 0x38-byte object entries. This was verified
-    // against PIKATYUU_M: both object headers resolve to valid PICA command
-    // buffers only with this stride.
     constexpr std::size_t kObjectStride = 0x38;
     for (std::uint32_t i = 0; i < objectCount; ++i) {
         const std::size_t q = static_cast<std::size_t>(objectsOffset) + static_cast<std::size_t>(i) * kObjectStride;
