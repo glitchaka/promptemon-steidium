@@ -29,13 +29,15 @@ constexpr int ID_IDLE = 1001;
 constexpr int ID_ACTION1 = 1002;
 constexpr int ID_ACTION2 = 1003;
 constexpr int ID_MODELS = 1004;
-
 constexpr int ID_PICKER_SEARCH = 2001;
 constexpr int ID_PICKER_LIST = 2002;
 constexpr int ID_PICKER_LOAD = 2003;
 constexpr int ID_PICKER_CANCEL = 2004;
+constexpr int ID_PICKER_COUNT = 2005;
+constexpr int TOOLBAR_HEIGHT = 52;
 
 HWND gWindow = nullptr;
+HWND gRenderWindow = nullptr;
 HDC gDC = nullptr;
 HGLRC gGL = nullptr;
 
@@ -61,6 +63,7 @@ std::unordered_map<std::string, GLuint> gGlTextures;
 HWND gPicker = nullptr;
 HWND gPickerSearch = nullptr;
 HWND gPickerList = nullptr;
+HWND gPickerCount = nullptr;
 std::vector<std::string> gFilteredModels;
 
 std::string lower(std::string text) {
@@ -71,11 +74,11 @@ std::string lower(std::string text) {
 }
 
 void setStatus(const std::string& text) {
-    if (!gWindow) return;
-    SetWindowTextA(gWindow, ("promptemon-steidium - " + text).c_str());
+    if (gWindow) SetWindowTextA(gWindow, ("promptemon-steidium - " + text).c_str());
 }
 
 void destroyGlTextures() {
+    if (!gGL) return;
     for (const auto& [name, id] : gGlTextures) {
         (void)name;
         if (id) glDeleteTextures(1, &id);
@@ -86,19 +89,17 @@ void destroyGlTextures() {
 void uploadGlTextures() {
     if (!gGL || !gScene) return;
     destroyGlTextures();
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     for (const auto& texture : gScene->textures()) {
         if (texture.width <= 0 || texture.height <= 0 || texture.rgba.empty()) continue;
         GLuint id = 0;
         glGenTextures(1, &id);
         glBindTexture(GL_TEXTURE_2D, id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                     texture.width, texture.height, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture.width, texture.height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, texture.rgba.data());
         gGlTextures[texture.name] = id;
     }
@@ -110,19 +111,11 @@ void updateModelBounds() {
     gFitScale = 1.0f;
     if (!gScene || gScene->meshes().empty()) return;
 
-    Vec3 minimum{
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max()
-    };
-    Vec3 maximum{
-        -std::numeric_limits<float>::max(),
-        -std::numeric_limits<float>::max(),
-        -std::numeric_limits<float>::max()
-    };
-
+    Vec3 minimum{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    Vec3 maximum{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
     const auto bindPose = gScene->samplePose(nullptr, 0.0f);
     bool found = false;
+
     for (const auto& mesh : gScene->meshes()) {
         for (const auto& vertex : mesh.vertices) {
             const auto p = gScene->skin(vertex, bindPose);
@@ -137,26 +130,21 @@ void updateModelBounds() {
     }
     if (!found) return;
 
-    gModelCenter = {
-        (minimum.x + maximum.x) * 0.5f,
-        (minimum.y + maximum.y) * 0.5f,
-        (minimum.z + maximum.z) * 0.5f
-    };
-    const float extent = std::max({
-        maximum.x - minimum.x,
-        maximum.y - minimum.y,
-        maximum.z - minimum.z
-    });
-    if (extent > 1e-5f) gFitScale = 1.65f / extent;
+    gModelCenter = {(minimum.x + maximum.x) * 0.5f,
+                    (minimum.y + maximum.y) * 0.5f,
+                    (minimum.z + maximum.z) * 0.5f};
+    const float extent = std::max({maximum.x - minimum.x, maximum.y - minimum.y, maximum.z - minimum.z});
+    if (extent > 1e-5f) gFitScale = 1.75f / extent;
 }
 
 const Animation* chooseAction(const char* preferred, const char* contains) {
     if (!gScene) return nullptr;
     if (preferred) {
-        if (auto* a = gScene->findAnimation(preferred)) return a;
+        if (auto* animation = gScene->findAnimation(preferred)) return animation;
     }
-    for (const auto& a : gScene->animations()) {
-        if (!a.loop && a.frames > 2.0f && (!contains || a.name.find(contains) != std::string::npos)) return &a;
+    for (const auto& animation : gScene->animations()) {
+        if (!animation.loop && animation.frames > 2.0f &&
+            (!contains || animation.name.find(contains) != std::string::npos)) return &animation;
     }
     return nullptr;
 }
@@ -170,18 +158,15 @@ void play(const Animation* animation) {
 
 std::vector<std::uint8_t> animationForModel(const std::string& modelPath) {
     if (!gArchive) return {};
-
     std::vector<std::string> candidates;
     if (modelPath.rfind("pii/", 0) == 0) candidates.push_back("pii/anim.bch.cx");
     if (modelPath.rfind("mii/", 0) == 0) candidates.push_back("mii/mii_anim.bch.cx");
-
     const auto slash = modelPath.find_last_of('/');
     if (slash != std::string::npos) {
         const auto directory = modelPath.substr(0, slash);
         candidates.push_back(directory + "/anim.bch.cx");
         candidates.push_back(directory + "/animation.bch.cx");
     }
-
     for (const auto& candidate : candidates) {
         if (gArchive->has(candidate)) return gArchive->extractBch(candidate);
     }
@@ -190,7 +175,6 @@ std::vector<std::uint8_t> animationForModel(const std::string& modelPath) {
 
 void loadModel(const std::string& modelPath) {
     if (!gArchive) throw std::runtime_error("ROM archive is not open");
-
     const auto model = gArchive->extractBch(modelPath);
     const auto animation = animationForModel(modelPath);
     auto next = std::make_unique<Scene>(Scene::parse(model, animation));
@@ -213,13 +197,13 @@ void loadModel(const std::string& modelPath) {
         }
     }
     gCurrent = gIdle;
-
     updateModelBounds();
     if (gGL) uploadGlTextures();
     setStatus(modelPath + " | drag: rotate | wheel: zoom");
 }
 
 void setupProjection(int width, int height) {
+    if (width < 1) width = 1;
     if (height < 1) height = 1;
     glViewport(0, 0, width, height);
     glMatrixMode(GL_PROJECTION);
@@ -232,11 +216,10 @@ void setupProjection(int width, int height) {
 }
 
 void drawScene() {
-    if (!gScene || !gWindow || !gGL) return;
-
+    if (!gScene || !gRenderWindow || !gGL) return;
     RECT rc{};
-    GetClientRect(gWindow, &rc);
-    setupProjection(rc.right - rc.left, rc.bottom - rc.top);
+    GetClientRect(gRenderWindow, &rc);
+    setupProjection(rc.right, rc.bottom);
 
     glClearColor(0.88f, 0.90f, 0.93f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -273,7 +256,7 @@ void drawScene() {
         glBegin(GL_TRIANGLES);
         for (const auto& vertex : mesh.vertices) {
             const Vec3 p = gScene->skin(vertex, matrices);
-            if (textureId) glTexCoord2f(vertex.uv.x, vertex.uv.y);
+            if (textureId) glTexCoord2f(vertex.uv.x, 1.0f - vertex.uv.y);
             glVertex3f(p.x, p.y, p.z);
         }
         glEnd();
@@ -289,13 +272,11 @@ void tick() {
     float dt = std::chrono::duration<float>(now - gLastTick).count();
     gLastTick = now;
     dt = std::clamp(dt, 0.0f, 0.1f);
-
     if (gCurrent) {
         gFrame += dt * 30.0f;
         if (gCurrent->frames > 0.0f && gFrame > gCurrent->frames) {
-            if (gCurrent->loop) {
-                gFrame = std::fmod(gFrame, gCurrent->frames);
-            } else {
+            if (gCurrent->loop) gFrame = std::fmod(gFrame, gCurrent->frames);
+            else {
                 gCurrent = gIdle;
                 gFrame = 0.0f;
                 setStatus(gSelectedModel + " | idle");
@@ -329,15 +310,14 @@ void shutdownOpenGL() {
         wglDeleteContext(gGL);
         gGL = nullptr;
     }
-    if (gDC && gWindow) {
-        ReleaseDC(gWindow, gDC);
+    if (gDC && gRenderWindow) {
+        ReleaseDC(gRenderWindow, gDC);
         gDC = nullptr;
     }
 }
 
 void repopulatePicker() {
     if (!gPickerList) return;
-
     char searchBuffer[512]{};
     if (gPickerSearch) GetWindowTextA(gPickerSearch, searchBuffer, static_cast<int>(sizeof(searchBuffer)));
     const std::string query = lower(searchBuffer);
@@ -346,18 +326,21 @@ void repopulatePicker() {
     gFilteredModels.clear();
     for (const auto& path : gModelResources) {
         if (!query.empty() && lower(path).find(query) == std::string::npos) continue;
-        const auto index = SendMessageA(gPickerList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(path.c_str()));
-        if (index != LB_ERR && index != LB_ERRSPACE) gFilteredModels.push_back(path);
+        if (SendMessageA(gPickerList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(path.c_str())) != LB_ERR) {
+            gFilteredModels.push_back(path);
+        }
     }
-
     if (!gFilteredModels.empty()) SendMessageA(gPickerList, LB_SETCURSEL, 0, 0);
+    if (gPickerCount) {
+        const std::string text = std::to_string(gFilteredModels.size()) + " modelos";
+        SetWindowTextA(gPickerCount, text.c_str());
+    }
 }
 
 bool loadPickerSelection() {
     if (!gPickerList) return false;
     const LRESULT selected = SendMessageA(gPickerList, LB_GETCURSEL, 0, 0);
     if (selected == LB_ERR || static_cast<std::size_t>(selected) >= gFilteredModels.size()) return false;
-
     try {
         loadModel(gFilteredModels[static_cast<std::size_t>(selected)]);
         return true;
@@ -369,35 +352,37 @@ bool loadPickerSelection() {
 
 LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_CREATE: {
+        case WM_CREATE:
             gPicker = hwnd;
-            CreateWindowA("STATIC", "Buscar modelo:", WS_CHILD | WS_VISIBLE,
-                          12, 14, 110, 22, hwnd, nullptr, nullptr, nullptr);
-            gPickerSearch = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-                                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                            120, 10, 520, 26, hwnd,
-                                            reinterpret_cast<HMENU>(ID_PICKER_SEARCH), nullptr, nullptr);
+            CreateWindowA("STATIC", "Buscar:", WS_CHILD | WS_VISIBLE, 12, 15, 62, 22, hwnd, nullptr, nullptr, nullptr);
+            gPickerSearch = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                            74, 10, 480, 26, hwnd, reinterpret_cast<HMENU>(ID_PICKER_SEARCH), nullptr, nullptr);
+            gPickerCount = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                                         560, 15, 92, 22, hwnd, reinterpret_cast<HMENU>(ID_PICKER_COUNT), nullptr, nullptr);
             gPickerList = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", "",
                                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                                          12, 48, 628, 420, hwnd,
-                                          reinterpret_cast<HMENU>(ID_PICKER_LIST), nullptr, nullptr);
+                                          12, 48, 640, 420, hwnd, reinterpret_cast<HMENU>(ID_PICKER_LIST), nullptr, nullptr);
             CreateWindowA("BUTTON", "Cargar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                          446, 480, 92, 30, hwnd,
-                          reinterpret_cast<HMENU>(ID_PICKER_LOAD), nullptr, nullptr);
+                          458, 480, 92, 30, hwnd, reinterpret_cast<HMENU>(ID_PICKER_LOAD), nullptr, nullptr);
             CreateWindowA("BUTTON", "Cancelar", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          548, 480, 92, 30, hwnd,
-                          reinterpret_cast<HMENU>(ID_PICKER_CANCEL), nullptr, nullptr);
+                          560, 480, 92, 30, hwnd, reinterpret_cast<HMENU>(ID_PICKER_CANCEL), nullptr, nullptr);
             repopulatePicker();
             SetFocus(gPickerSearch);
             return 0;
-        }
         case WM_SIZE: {
             const int width = LOWORD(lp);
             const int height = HIWORD(lp);
-            if (gPickerSearch) MoveWindow(gPickerSearch, 120, 10, std::max(120, width - 132), 26, TRUE);
+            if (gPickerSearch) MoveWindow(gPickerSearch, 74, 10, std::max(120, width - 180), 26, TRUE);
+            if (gPickerCount) MoveWindow(gPickerCount, width - 98, 15, 86, 22, TRUE);
             if (gPickerList) MoveWindow(gPickerList, 12, 48, std::max(120, width - 24), std::max(80, height - 100), TRUE);
             if (auto load = GetDlgItem(hwnd, ID_PICKER_LOAD)) MoveWindow(load, width - 206, height - 42, 92, 30, TRUE);
             if (auto cancel = GetDlgItem(hwnd, ID_PICKER_CANCEL)) MoveWindow(cancel, width - 104, height - 42, 92, 30, TRUE);
+            return 0;
+        }
+        case WM_GETMINMAXINFO: {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lp);
+            info->ptMinTrackSize.x = 520;
+            info->ptMinTrackSize.y = 380;
             return 0;
         }
         case WM_COMMAND:
@@ -405,11 +390,7 @@ LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 repopulatePicker();
                 return 0;
             }
-            if (LOWORD(wp) == ID_PICKER_LIST && HIWORD(wp) == LBN_DBLCLK) {
-                if (loadPickerSelection()) DestroyWindow(hwnd);
-                return 0;
-            }
-            if (LOWORD(wp) == ID_PICKER_LOAD) {
+            if ((LOWORD(wp) == ID_PICKER_LIST && HIWORD(wp) == LBN_DBLCLK) || LOWORD(wp) == ID_PICKER_LOAD) {
                 if (loadPickerSelection()) DestroyWindow(hwnd);
                 return 0;
             }
@@ -425,7 +406,13 @@ LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             gPicker = nullptr;
             gPickerSearch = nullptr;
             gPickerList = nullptr;
+            gPickerCount = nullptr;
             gFilteredModels.clear();
+            if (gWindow) {
+                EnableWindow(gWindow, TRUE);
+                SetForegroundWindow(gWindow);
+                SetFocus(gWindow);
+            }
             return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
@@ -433,7 +420,6 @@ LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 void showModelPicker() {
     if (!gWindow || gPicker) return;
-
     static bool registered = false;
     if (!registered) {
         WNDCLASSA wc{};
@@ -450,54 +436,32 @@ void showModelPicker() {
 
     RECT owner{};
     GetWindowRect(gWindow, &owner);
-    const int width = 680;
+    const int width = 700;
     const int height = 570;
     const int x = owner.left + ((owner.right - owner.left) - width) / 2;
     const int y = owner.top + ((owner.bottom - owner.top) - height) / 2;
-
     EnableWindow(gWindow, FALSE);
-    HWND picker = CreateWindowExA(WS_EX_DLGMODALFRAME,
-                                  "PromptemonModelPicker",
-                                  "Modelos 3D de Pokemon Rumble World",
-                                  WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VISIBLE,
-                                  x, y, width, height,
-                                  gWindow, nullptr, GetModuleHandleA(nullptr), nullptr);
-    if (!picker) {
+    gPicker = CreateWindowExA(WS_EX_DLGMODALFRAME, "PromptemonModelPicker",
+                              "Modelos 3D de Pokemon Rumble World",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VISIBLE,
+                              x, y, width, height, gWindow, nullptr, GetModuleHandleA(nullptr), nullptr);
+    if (!gPicker) {
         EnableWindow(gWindow, TRUE);
         throw std::runtime_error("Could not create model picker");
     }
-
-    MSG msg{};
-    while (IsWindow(picker) && GetMessageA(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageA(&msg);
-    }
-    EnableWindow(gWindow, TRUE);
-    SetForegroundWindow(gWindow);
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+void layoutMainWindow(HWND hwnd) {
+    if (!gRenderWindow) return;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int width = std::max(1L, rc.right - rc.left);
+    const int height = std::max(1L, rc.bottom - rc.top);
+    MoveWindow(gRenderWindow, 0, TOOLBAR_HEIGHT, width, std::max(1, height - TOOLBAR_HEIGHT), TRUE);
+}
+
+LRESULT CALLBACK RenderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_CREATE:
-            CreateWindowA("BUTTON", "Modelos...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          12, 12, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_MODELS), nullptr, nullptr);
-            CreateWindowA("BUTTON", "Idle", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          125, 12, 80, 30, hwnd, reinterpret_cast<HMENU>(ID_IDLE), nullptr, nullptr);
-            CreateWindowA("BUTTON", "Accion 1", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          213, 12, 90, 30, hwnd, reinterpret_cast<HMENU>(ID_ACTION1), nullptr, nullptr);
-            CreateWindowA("BUTTON", "Accion 2", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          311, 12, 90, 30, hwnd, reinterpret_cast<HMENU>(ID_ACTION2), nullptr, nullptr);
-            return 0;
-        case WM_COMMAND:
-            try {
-                if (LOWORD(wp) == ID_MODELS) showModelPicker();
-                else if (LOWORD(wp) == ID_IDLE) play(gIdle);
-                else if (LOWORD(wp) == ID_ACTION1) play(chooseAction("Pii_ROOT_attack_2__attack", "attack"));
-                else if (LOWORD(wp) == ID_ACTION2) play(chooseAction("Pii_ROOT_attack_TUNODORIRU__attack", "attack_"));
-            } catch (const std::exception& e) {
-                MessageBoxA(hwnd, e.what(), "promptemon-steidium", MB_OK | MB_ICONERROR);
-            }
-            return 0;
         case WM_LBUTTONDOWN:
             gDragging = true;
             gLastMouse = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -520,6 +484,61 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             gZoom *= GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1f : 0.9f;
             gZoom = std::clamp(gZoom, 0.45f, 2.25f);
             return 0;
+        case WM_ERASEBKGND:
+            return 1;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE: {
+            CreateWindowA("BUTTON", "Modelos...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                          12, 11, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_MODELS), nullptr, nullptr);
+            CreateWindowA("BUTTON", "Idle", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                          125, 11, 80, 30, hwnd, reinterpret_cast<HMENU>(ID_IDLE), nullptr, nullptr);
+            CreateWindowA("BUTTON", "Accion 1", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                          213, 11, 90, 30, hwnd, reinterpret_cast<HMENU>(ID_ACTION1), nullptr, nullptr);
+            CreateWindowA("BUTTON", "Accion 2", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                          311, 11, 90, 30, hwnd, reinterpret_cast<HMENU>(ID_ACTION2), nullptr, nullptr);
+            gRenderWindow = CreateWindowExA(0, "PromptemonRenderSurface", "",
+                                            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                                            0, TOOLBAR_HEIGHT, 1, 1, hwnd, nullptr, GetModuleHandleA(nullptr), nullptr);
+            if (!gRenderWindow) return -1;
+            layoutMainWindow(hwnd);
+            return 0;
+        }
+        case WM_SIZE:
+            layoutMainWindow(hwnd);
+            return 0;
+        case WM_GETMINMAXINFO: {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lp);
+            info->ptMinTrackSize.x = 640;
+            info->ptMinTrackSize.y = 480;
+            HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{sizeof(mi)};
+            if (GetMonitorInfoA(monitor, &mi)) {
+                const int maxWidth = mi.rcWork.right - mi.rcWork.left;
+                const int maxHeight = mi.rcWork.bottom - mi.rcWork.top;
+                info->ptMaxTrackSize.x = maxWidth;
+                info->ptMaxTrackSize.y = maxHeight;
+                info->ptMaxSize.x = maxWidth;
+                info->ptMaxSize.y = maxHeight;
+            }
+            return 0;
+        }
+        case WM_COMMAND:
+            try {
+                if (LOWORD(wp) == ID_MODELS) showModelPicker();
+                else if (LOWORD(wp) == ID_IDLE) play(gIdle);
+                else if (LOWORD(wp) == ID_ACTION1) play(chooseAction("Pii_ROOT_attack_2__attack", "attack"));
+                else if (LOWORD(wp) == ID_ACTION2) play(chooseAction("Pii_ROOT_attack_TUNODORIRU__attack", "attack_"));
+            } catch (const std::exception& e) {
+                MessageBoxA(hwnd, e.what(), "promptemon-steidium", MB_OK | MB_ICONERROR);
+            }
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
@@ -535,12 +554,10 @@ std::filesystem::path findCiaInRomDir(const std::filesystem::path& base) {
     const auto romDir = base / "roms";
     std::error_code ec;
     if (!std::filesystem::is_directory(romDir, ec)) return {};
-
     for (const auto& entry : std::filesystem::directory_iterator(romDir, ec)) {
         if (ec) break;
         if (!entry.is_regular_file(ec)) continue;
-        std::string extension = lower(entry.path().extension().string());
-        if (extension == ".cia") return entry.path();
+        if (lower(entry.path().extension().string()) == ".cia") return entry.path();
     }
     return {};
 }
@@ -549,7 +566,6 @@ std::filesystem::path findCiaFromAncestors(std::filesystem::path start) {
     std::error_code ec;
     start = std::filesystem::absolute(start, ec);
     if (ec) return {};
-
     for (;;) {
         if (auto cia = findCiaInRomDir(start); !cia.empty()) return cia;
         const auto parent = start.parent_path();
@@ -576,28 +592,19 @@ std::filesystem::path ciaFromCommandLine() {
         return explicitPath;
     }
     if (argv) LocalFree(argv);
-
     if (auto cia = findCiaFromAncestors(std::filesystem::current_path()); !cia.empty()) return cia;
     if (auto cia = findCiaFromAncestors(executableDirectory()); !cia.empty()) return cia;
-
-    throw std::runtime_error(
-        "No CIA found. Put Pokemon Rumble World in: promptemon-steidium\\roms\\"
-    );
+    throw std::runtime_error("No CIA found. Put Pokemon Rumble World in: promptemon-steidium\\roms\\");
 }
 
 void initializeArchive(const std::filesystem::path& cia) {
     gArchive = std::make_unique<RumbleWorldArchive>();
     if (!gArchive->open(cia)) throw std::runtime_error("Could not open CIA: " + cia.string());
-
     gModelResources = gArchive->modelResources();
     if (gModelResources.empty()) throw std::runtime_error("No BCH model resources found in CIA");
-
     const std::string pikachu = "pii/PIKATYUU_M.bch.cx";
-    if (std::find(gModelResources.begin(), gModelResources.end(), pikachu) != gModelResources.end()) {
-        loadModel(pikachu);
-    } else {
-        loadModel(gModelResources.front());
-    }
+    if (std::find(gModelResources.begin(), gModelResources.end(), pikachu) != gModelResources.end()) loadModel(pikachu);
+    else loadModel(gModelResources.front());
 }
 
 } // namespace
@@ -607,22 +614,34 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         const auto cia = ciaFromCommandLine();
         initializeArchive(cia);
 
+        WNDCLASSA renderClass{};
+        renderClass.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+        renderClass.lpfnWndProc = RenderProc;
+        renderClass.hInstance = instance;
+        renderClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        renderClass.lpszClassName = "PromptemonRenderSurface";
+        if (!RegisterClassA(&renderClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            throw std::runtime_error("Could not register render surface");
+        }
+
         WNDCLASSA wc{};
-        wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+        wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = WndProc;
         wc.hInstance = instance;
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
         wc.lpszClassName = "PromptemonSteidiumDemo";
-        if (!RegisterClassA(&wc)) throw std::runtime_error("Could not register window class");
+        if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            throw std::runtime_error("Could not register window class");
+        }
 
         gWindow = CreateWindowExA(0, wc.lpszClassName, "promptemon-steidium",
-                                  WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                  WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 960, 720,
                                   nullptr, nullptr, instance, nullptr);
-        if (!gWindow) throw std::runtime_error("Could not create window");
+        if (!gWindow || !gRenderWindow) throw std::runtime_error("Could not create window");
 
-        initOpenGL(gWindow);
+        initOpenGL(gRenderWindow);
         ShowWindow(gWindow, show);
         UpdateWindow(gWindow);
         setStatus(gSelectedModel + " | drag: rotate | wheel: zoom");
