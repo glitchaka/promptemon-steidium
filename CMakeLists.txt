@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(promptemon_rom
+    src/rom/Lzh8.cpp
     src/rom/RomInspector.cpp
+    src/rom/RumbleWorldArchive.cpp
 )
 
 target_include_directories(promptemon_rom PUBLIC
@@ -18,3 +20,9 @@ add_executable(rom_probe
 )
 
 target_link_libraries(rom_probe PRIVATE promptemon_rom)
+
+add_executable(rumble_probe
+    tools/rumble_probe.cpp
+)
+
+target_link_libraries(rumble_probe PRIVATE promptemon_rom)
