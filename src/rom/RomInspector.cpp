@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
