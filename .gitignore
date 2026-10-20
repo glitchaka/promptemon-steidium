@@ -1,0 +1,15 @@
+# Local game dumps / ROMs - never commit
+roms/*
+!roms/README.md
+
+*.cia
+*.3ds
+*.cci
+*.nds
+*.gba
+*.gb
+*.gbc
+
+# Build output
+build/
+out/
