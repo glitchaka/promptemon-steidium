@@ -15,6 +15,7 @@ public:
     bool isOpen() const noexcept;
 
     std::vector<std::string> pokemonModels() const;
+    std::vector<std::string> modelResources() const;
     bool has(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extract(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extractBch(const std::string& romfsPath) const;
