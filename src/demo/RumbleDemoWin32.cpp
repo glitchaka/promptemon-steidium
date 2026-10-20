@@ -216,27 +216,67 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
+std::filesystem::path findCiaInRomDir(const std::filesystem::path& base) {
+    const auto romDir = base / "roms";
+    std::error_code ec;
+    if (!std::filesystem::is_directory(romDir, ec)) return {};
+
+    for (const auto& entry : std::filesystem::directory_iterator(romDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (ext == ".cia") return entry.path();
+    }
+    return {};
+}
+
+std::filesystem::path findCiaFromAncestors(std::filesystem::path start) {
+    std::error_code ec;
+    start = std::filesystem::absolute(start, ec);
+    if (ec) return {};
+
+    for (;;) {
+        if (auto cia = findCiaInRomDir(start); !cia.empty()) return cia;
+        const auto parent = start.parent_path();
+        if (parent.empty() || parent == start) break;
+        start = parent;
+    }
+    return {};
+}
+
+std::filesystem::path executableDirectory() {
+    std::wstring buffer(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) return {};
+    buffer.resize(length);
+    return std::filesystem::path(buffer).parent_path();
+}
+
 std::filesystem::path ciaFromCommandLine() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::filesystem::path out;
-    if (argv && argc >= 2) out = argv[1];
-    if (argv) LocalFree(argv);
-    if (out.empty()) {
-        const std::filesystem::path romDir = "roms";
-        if (std::filesystem::exists(romDir)) {
-            for (const auto& e : std::filesystem::directory_iterator(romDir)) {
-                if (e.is_regular_file() && e.path().extension() == ".cia") return e.path();
-            }
-        }
-        out = "roms/Pokemon Rumble World.cia";
+    if (argv && argc >= 2) {
+        const std::filesystem::path explicitPath = argv[1];
+        LocalFree(argv);
+        return explicitPath;
     }
-    return out;
+    if (argv) LocalFree(argv);
+
+    if (auto cia = findCiaFromAncestors(std::filesystem::current_path()); !cia.empty()) return cia;
+    if (auto cia = findCiaFromAncestors(executableDirectory()); !cia.empty()) return cia;
+
+    throw std::runtime_error(
+        "No CIA found. Put your Pokemon Rumble World .cia in the repository roms folder: "
+        "promptemon-steidium\\roms\\"
+    );
 }
 
 void loadPokemon(const std::filesystem::path& cia) {
     promptemon::rom::RumbleWorldArchive archive;
-    if (!archive.open(cia)) throw std::runtime_error("Could not open CIA");
+    if (!archive.open(cia)) throw std::runtime_error("Could not open CIA: " + cia.string());
     const auto model = archive.extractBch("pii/PIKATYUU_M.bch.cx");
     const auto anim = archive.extractBch("pii/anim.bch.cx");
     gScene = std::make_unique<Scene>(Scene::parse(model, anim));
