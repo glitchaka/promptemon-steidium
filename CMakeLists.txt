@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(promptemon_rom
     src/rom/Lzh8.cpp
     src/rom/RomInspector.cpp
+    src/rom/RomLibrary.cpp
+    src/rom/CiaBchModelSource.cpp
     src/rom/RumbleWorldArchive.cpp
 )
 
