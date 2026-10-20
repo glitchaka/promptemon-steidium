@@ -43,7 +43,7 @@ if(WIN32)
     add_executable(promptemon_demo WIN32
         src/demo/PromptemonPrototypeWin32.cpp
     )
-    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(promptemon_demo PRIVATE
         gdi32
         user32
