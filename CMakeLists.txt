@@ -40,7 +40,7 @@ target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
     add_executable(promptemon_demo WIN32
-        src/demo/RumbleDemoWin32.cpp
+        src/demo/PromptemonDemoWin32.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(promptemon_demo PRIVATE
