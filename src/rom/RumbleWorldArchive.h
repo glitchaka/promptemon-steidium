@@ -18,23 +18,27 @@ public:
 
     std::vector<std::string> pokemonModels() const;
 
-    // All BCH containers that can represent a visible 3D resource. Animation-only
-    // containers are omitted from the picker; the selected BCH is still validated
-    // by the BCH parser when it is loaded.
+    // Enumerates BCH model candidates from any readable CIA RomFS. Both raw
+    // .bch and LZH8-compressed .bch.cx resources are accepted. Animation-only
+    // resources are excluded from the model picker and can still be loaded by
+    // a model provider as companions.
     std::vector<std::string> modelResources() const {
         std::vector<std::string> result;
         result.reserve(files_.size());
         for (const auto& [path, record] : files_) {
             (void)record;
-            if (path.size() < 7 || path.compare(path.size() - 7, 7, ".bch.cx") != 0) continue;
-
-            std::string leaf = path.substr(path.find_last_of('/') == std::string::npos
-                                               ? 0
-                                               : path.find_last_of('/') + 1);
-            std::transform(leaf.begin(), leaf.end(), leaf.begin(), [](unsigned char c) {
+            std::string lowered = path;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
                 return static_cast<char>(std::tolower(c));
             });
-            if (leaf == "anim.bch.cx" || leaf == "mii_anim.bch.cx" ||
+            const bool isBch = lowered.size() >= 4 && lowered.compare(lowered.size() - 4, 4, ".bch") == 0;
+            const bool isCompressedBch = lowered.size() >= 7 && lowered.compare(lowered.size() - 7, 7, ".bch.cx") == 0;
+            if (!isBch && !isCompressedBch) continue;
+
+            const auto slash = lowered.find_last_of('/');
+            const std::string leaf = lowered.substr(slash == std::string::npos ? 0 : slash + 1);
+            if (leaf == "anim.bch" || leaf == "anim.bch.cx" ||
+                leaf == "mii_anim.bch" || leaf == "mii_anim.bch.cx" ||
                 leaf.find("animation") != std::string::npos) {
                 continue;
             }
