@@ -21,7 +21,9 @@
 
 namespace {
 using promptemon::bch::Animation;
+using promptemon::bch::Material;
 using promptemon::bch::Scene;
+using promptemon::bch::Vec2;
 using promptemon::bch::Vec3;
 using promptemon::rom::RumbleWorldArchive;
 
@@ -71,6 +73,20 @@ std::string lower(std::string text) {
         return static_cast<char>(std::tolower(c));
     });
     return text;
+}
+
+Vec2 materialUv(const Material* material, Vec2 uv) {
+    if (!material) return uv;
+    const float cosine = std::cos(material->uvRotation);
+    const float sine = std::sin(material->uvRotation);
+    const float centeredU = uv.x - 0.5f;
+    const float centeredV = uv.y - 0.5f;
+    const float rotatedU = centeredU * cosine - centeredV * sine + 0.5f;
+    const float rotatedV = centeredU * sine + centeredV * cosine + 0.5f;
+    return {
+        rotatedU * material->uvScaleU - material->uvTranslateU,
+        rotatedV * material->uvScaleV - material->uvTranslateV
+    };
 }
 
 void setStatus(const std::string& text) {
@@ -238,6 +254,9 @@ void drawScene() {
     const auto matrices = gScene->samplePose(gCurrent, gFrame);
     for (const auto& mesh : gScene->meshes()) {
         const auto* texture = gScene->textureForMaterial(mesh.materialId);
+        const Material* material = mesh.materialId < gScene->materials().size()
+            ? &gScene->materials()[mesh.materialId]
+            : nullptr;
         GLuint textureId = 0;
         if (texture) {
             const auto it = gGlTextures.find(texture->name);
@@ -256,7 +275,10 @@ void drawScene() {
         glBegin(GL_TRIANGLES);
         for (const auto& vertex : mesh.vertices) {
             const Vec3 p = gScene->skin(vertex, matrices);
-            if (textureId) glTexCoord2f(vertex.uv.x, 1.0f - vertex.uv.y);
+            if (textureId) {
+                const Vec2 uv = materialUv(material, vertex.uv);
+                glTexCoord2f(uv.x, 1.0f - uv.y);
+            }
             glVertex3f(p.x, p.y, p.z);
         }
         glEnd();
@@ -455,8 +477,8 @@ void layoutMainWindow(HWND hwnd) {
     if (!gRenderWindow) return;
     RECT rc{};
     GetClientRect(hwnd, &rc);
-    const int width = std::max(1L, rc.right - rc.left);
-    const int height = std::max(1L, rc.bottom - rc.top);
+    const int width = static_cast<int>(std::max<LONG>(1, rc.right - rc.left));
+    const int height = static_cast<int>(std::max<LONG>(1, rc.bottom - rc.top));
     MoveWindow(gRenderWindow, 0, TOOLBAR_HEIGHT, width, std::max(1, height - TOOLBAR_HEIGHT), TRUE);
 }
 
