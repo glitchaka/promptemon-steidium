@@ -2,7 +2,6 @@
 
 #include "rom/RumbleWorldArchive.h"
 
-#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -29,13 +28,22 @@ public:
     std::string providerName() const override { return "Nintendo 3DS BCH"; }
     std::vector<ModelResource> models() const override { return resources_; }
 
+    bool hasBch(const std::string& resourceId) const override {
+        return archive_ && archive_->has(resourceId);
+    }
+
+    std::vector<std::uint8_t> extractBch(const std::string& resourceId) const override {
+        if (!archive_) throw std::runtime_error("3DS model source is closed");
+        return archive_->extractBch(resourceId);
+    }
+
     ModelPayload load(const std::string& resourceId) const override {
-        if (!archive_ || !archive_->has(resourceId)) {
+        if (!hasBch(resourceId)) {
             throw std::runtime_error("Model resource not found: " + resourceId);
         }
 
         ModelPayload payload;
-        payload.modelBch = archive_->extractBch(resourceId);
+        payload.modelBch = extractBch(resourceId);
 
         std::vector<std::string> candidates;
         const auto slash = resourceId.find_last_of('/');
@@ -56,14 +64,11 @@ public:
         }
 
         for (const auto& candidate : candidates) {
-            if (archive_->has(candidate)) {
-                try {
-                    payload.animationBch = archive_->extractBch(candidate);
-                    break;
-                } catch (...) {
-                    // A companion named like an animation can still be another BCH
-                    // resource type. Ignore it and keep looking.
-                }
+            if (!hasBch(candidate)) continue;
+            try {
+                payload.animationBch = extractBch(candidate);
+                break;
+            } catch (...) {
             }
         }
         return payload;
