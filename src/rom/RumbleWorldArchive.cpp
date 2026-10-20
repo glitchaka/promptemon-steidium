@@ -26,9 +26,7 @@ std::uint32_t u32(const std::vector<std::uint8_t>& data, std::size_t offset) {
 std::uint64_t u64(const std::vector<std::uint8_t>& data, std::size_t offset) {
     if (offset + 8 > data.size()) throw std::runtime_error("Unexpected end of structure");
     std::uint64_t value = 0;
-    for (unsigned i = 0; i < 8; ++i) {
-        value |= static_cast<std::uint64_t>(data[offset + i]) << (8u * i);
-    }
+    for (unsigned i = 0; i < 8; ++i) value |= static_cast<std::uint64_t>(data[offset + i]) << (8u * i);
     return value;
 }
 
@@ -36,11 +34,17 @@ std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment) {
     return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
+bool magicAt(const std::vector<std::uint8_t>& data, std::size_t offset, const char* magic) {
+    for (std::size_t i = 0; magic[i] != 0; ++i) {
+        if (offset + i >= data.size() || data[offset + i] != static_cast<std::uint8_t>(magic[i])) return false;
+    }
+    return true;
+}
+
 std::string utf16Ascii(const std::vector<std::uint8_t>& data, std::size_t offset, std::uint32_t byteLength) {
     if (offset + byteLength > data.size() || (byteLength & 1u) != 0) {
         throw std::runtime_error("Invalid RomFS UTF-16 name");
     }
-
     std::string out;
     out.reserve(byteLength / 2u);
     for (std::uint32_t i = 0; i < byteLength; i += 2) {
@@ -52,8 +56,7 @@ std::string utf16Ascii(const std::vector<std::uint8_t>& data, std::size_t offset
 }
 
 bool endsWith(const std::string& value, const std::string& suffix) {
-    return value.size() >= suffix.size() &&
-           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 struct DirectoryEntry {
@@ -72,9 +75,9 @@ struct FileEntry {
 
 } // namespace
 
-bool RumbleWorldArchive::open(const std::filesystem::path& ciaPath) {
+bool RumbleWorldArchive::open(const std::filesystem::path& romPath) {
     close();
-    path_ = ciaPath;
+    path_ = romPath;
 
     if (!std::filesystem::exists(path_) || !std::filesystem::is_regular_file(path_)) {
         close();
@@ -82,32 +85,65 @@ bool RumbleWorldArchive::open(const std::filesystem::path& ciaPath) {
     }
 
     try {
-        const auto ciaHeader = read(0, 0x20);
-        const std::uint32_t headerSize = u32(ciaHeader, 0x00);
-        const std::uint32_t certificateSize = u32(ciaHeader, 0x08);
-        const std::uint32_t ticketSize = u32(ciaHeader, 0x0C);
-        const std::uint32_t tmdSize = u32(ciaHeader, 0x10);
+        const std::uint64_t fileSize = std::filesystem::file_size(path_);
+        const auto outer = read(0, static_cast<std::size_t>(std::min<std::uint64_t>(fileSize, 0x400u)));
 
-        if (headerSize < 0x20) throw std::runtime_error("Invalid CIA header");
+        const auto tryNcch = [&](std::uint64_t ncchBase, std::uint64_t& romFsBase, std::uint64_t& romFsSize) -> bool {
+            if (ncchBase + 0x200 > fileSize) return false;
+            const auto ncch = read(ncchBase, 0x200);
+            if (!magicAt(ncch, 0x100, "NCCH")) return false;
 
-        std::uint64_t contentOffset = alignUp(headerSize, 0x40);
-        contentOffset = alignUp(contentOffset + certificateSize, 0x40);
-        contentOffset = alignUp(contentOffset + ticketSize, 0x40);
-        contentOffset = alignUp(contentOffset + tmdSize, 0x40);
+            const std::uint64_t offset = static_cast<std::uint64_t>(u32(ncch, 0x1B0)) * 0x200u;
+            const std::uint64_t size = static_cast<std::uint64_t>(u32(ncch, 0x1B4)) * 0x200u;
+            if (!offset || !size || ncchBase + offset + 4 > fileSize) return false;
 
-        const auto ncch = read(contentOffset, 0x200);
-        if (ncch[0x100] != 'N' || ncch[0x101] != 'C' || ncch[0x102] != 'C' || ncch[0x103] != 'H') {
-            throw std::runtime_error("First CIA content is not a readable NCCH partition");
+            const auto ivfc = read(ncchBase + offset, 4);
+            if (!magicAt(ivfc, 0, "IVFC")) return false;
+            romFsBase = ncchBase + offset;
+            romFsSize = std::min<std::uint64_t>(size, fileSize - romFsBase);
+            return true;
+        };
+
+        std::uint64_t romFsBase = 0;
+        std::uint64_t romFsSize = 0;
+        bool found = false;
+
+        // Raw CXI/NCCH image.
+        if (magicAt(outer, 0x100, "NCCH")) {
+            found = tryNcch(0, romFsBase, romFsSize);
         }
 
-        const std::uint64_t romFsOffset = static_cast<std::uint64_t>(u32(ncch, 0x1B0)) * 0x200u;
-        const std::uint64_t romFsSize = static_cast<std::uint64_t>(u32(ncch, 0x1B4)) * 0x200u;
-        if (romFsOffset == 0 || romFsSize == 0) throw std::runtime_error("NCCH has no RomFS");
+        // Cartridge image (.3ds/.cci): walk all NCSD partition entries and use
+        // the first partition with a readable, unencrypted RomFS.
+        if (!found && magicAt(outer, 0x100, "NCSD")) {
+            for (std::size_t i = 0; i < 8 && 0x128 + i * 8 <= outer.size(); ++i) {
+                const std::uint64_t partitionBase = static_cast<std::uint64_t>(u32(outer, 0x120 + i * 8)) * 0x200u;
+                if (!partitionBase) continue;
+                if (tryNcch(partitionBase, romFsBase, romFsSize)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
 
-        const std::uint64_t romFsBase = contentOffset + romFsOffset;
-        const auto ivfc = read(romFsBase, 4);
-        if (ivfc[0] != 'I' || ivfc[1] != 'V' || ivfc[2] != 'F' || ivfc[3] != 'C') {
-            throw std::runtime_error("RomFS is encrypted or unsupported");
+        // CIA: locate its first NCCH content using the aligned CIA sections.
+        if (!found) {
+            if (outer.size() < 0x20) throw std::runtime_error("Unsupported 3DS container");
+            const std::uint32_t headerSize = u32(outer, 0x00);
+            const std::uint32_t certificateSize = u32(outer, 0x08);
+            const std::uint32_t ticketSize = u32(outer, 0x0C);
+            const std::uint32_t tmdSize = u32(outer, 0x10);
+            if (headerSize >= 0x20 && headerSize < fileSize) {
+                std::uint64_t contentOffset = alignUp(headerSize, 0x40);
+                contentOffset = alignUp(contentOffset + certificateSize, 0x40);
+                contentOffset = alignUp(contentOffset + ticketSize, 0x40);
+                contentOffset = alignUp(contentOffset + tmdSize, 0x40);
+                found = tryNcch(contentOffset, romFsBase, romFsSize);
+            }
+        }
+
+        if (!found) {
+            throw std::runtime_error("No readable RomFS found; the 3DS content may be encrypted or unsupported");
         }
 
         indexRomFs(romFsBase, romFsSize);
@@ -163,17 +199,14 @@ std::vector<std::uint8_t> RumbleWorldArchive::extractBch(const std::string& romf
 
 std::vector<std::uint8_t> RumbleWorldArchive::read(std::uint64_t offset, std::size_t size) const {
     std::ifstream input(path_, std::ios::binary);
-    if (!input) throw std::runtime_error("Could not open CIA: " + path_.string());
-
+    if (!input) throw std::runtime_error("Could not open ROM container: " + path_.string());
     input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!input) throw std::runtime_error("Could not seek in CIA");
+    if (!input) throw std::runtime_error("Could not seek in ROM container");
 
     std::vector<std::uint8_t> data(size);
     if (size != 0) {
         input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
-        if (input.gcount() != static_cast<std::streamsize>(size)) {
-            throw std::runtime_error("Unexpected end of CIA");
-        }
+        if (input.gcount() != static_cast<std::streamsize>(size)) throw std::runtime_error("Unexpected end of ROM container");
     }
     return data;
 }
@@ -196,8 +229,7 @@ void RumbleWorldArchive::indexRomFs(std::uint64_t romFsBase, std::uint64_t romFs
         const std::uint32_t fileMetaSize = u32(probe, pos + 0x20);
         const std::uint32_t dataOffset = u32(probe, pos + 0x24);
 
-        const bool sequential =
-            dirHashOffset == 0x28u &&
+        const bool sequential = dirHashOffset == 0x28u &&
             dirMetaOffset == dirHashOffset + dirHashSize &&
             fileHashOffset == dirMetaOffset + dirMetaSize &&
             fileMetaOffset == fileHashOffset + fileHashSize &&
@@ -208,9 +240,7 @@ void RumbleWorldArchive::indexRomFs(std::uint64_t romFsBase, std::uint64_t romFs
         }
     }
 
-    if (level3Offset == static_cast<std::size_t>(-1)) {
-        throw std::runtime_error("Could not locate RomFS level-3 header");
-    }
+    if (level3Offset == static_cast<std::size_t>(-1)) throw std::runtime_error("Could not locate RomFS level-3 header");
 
     const std::uint32_t dirMetaOffset = u32(probe, level3Offset + 0x0C);
     const std::uint32_t dirMetaSize = u32(probe, level3Offset + 0x10);
@@ -224,9 +254,7 @@ void RumbleWorldArchive::indexRomFs(std::uint64_t romFsBase, std::uint64_t romFs
     const std::uint64_t fileDataBase = level3Base + dataOffset;
 
     const auto parseDirectory = [&directories](std::uint32_t offset) -> DirectoryEntry {
-        if (static_cast<std::uint64_t>(offset) + 0x18u > directories.size()) {
-            throw std::runtime_error("Invalid RomFS directory metadata offset");
-        }
+        if (static_cast<std::uint64_t>(offset) + 0x18u > directories.size()) throw std::runtime_error("Invalid RomFS directory metadata offset");
         DirectoryEntry entry;
         entry.sibling = u32(directories, offset + 0x04);
         entry.child = u32(directories, offset + 0x08);
@@ -237,9 +265,7 @@ void RumbleWorldArchive::indexRomFs(std::uint64_t romFsBase, std::uint64_t romFs
     };
 
     const auto parseFile = [&fileMetadata](std::uint32_t offset) -> FileEntry {
-        if (static_cast<std::uint64_t>(offset) + 0x20u > fileMetadata.size()) {
-            throw std::runtime_error("Invalid RomFS file metadata offset");
-        }
+        if (static_cast<std::uint64_t>(offset) + 0x20u > fileMetadata.size()) throw std::runtime_error("Invalid RomFS file metadata offset");
         FileEntry entry;
         entry.sibling = u32(fileMetadata, offset + 0x04);
         entry.dataOffset = u64(fileMetadata, offset + 0x08);
