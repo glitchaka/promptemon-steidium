@@ -1,0 +1,116 @@
+name: Import CnC network and W3D source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/import-cnc-source.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout promptemon-steidium
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sparse checkout CnC source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cnc-generals
+          git clone --depth=1 --filter=blob:none --no-checkout \
+            https://github.com/electronicarts/CnC_Generals_Zero_Hour.git /tmp/cnc-generals
+          cd /tmp/cnc-generals
+          git sparse-checkout init --no-cone
+          cat > .git/info/sparse-checkout <<'EOF'
+          /LICENSE.md
+          /Generals/Code/GameEngine/Include/GameNetwork/udp.h
+          /Generals/Code/GameEngine/Include/GameNetwork/Transport.h
+          /Generals/Code/GameEngine/Include/GameNetwork/NetworkDefs.h
+          /Generals/Code/GameEngine/Include/GameNetwork/IPEnumeration.h
+          /Generals/Code/GameEngine/Include/GameNetwork/LANAPI.h
+          /Generals/Code/GameEngine/Include/GameNetwork/LANAPICallbacks.h
+          /Generals/Code/GameEngine/Include/GameNetwork/LANGameInfo.h
+          /Generals/Code/GameEngine/Include/GameNetwork/LANPlayer.h
+          /Generals/Code/GameEngine/Include/GameNetwork/NAT.h
+          /Generals/Code/GameEngine/Include/GameNetwork/networkutil.h
+          /Generals/Code/GameEngine/Source/GameNetwork/udp.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/Transport.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/IPEnumeration.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/LANAPI.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/LANAPICallbacks.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/LANGameInfo.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/NAT.cpp
+          /Generals/Code/GameEngine/Source/GameNetwork/NetworkUtil.cpp
+          /Generals/Code/GameEngineDevice/GameEngineDevice.dsp
+          /Generals/Code/GameEngineDevice/Include/W3DDevice/
+          /Generals/Code/GameEngineDevice/Source/W3DDevice/
+          /Generals/Code/Libraries/Source/WWVegas/WW3D2/
+          /Generals/Code/Libraries/Source/WWVegas/WWMath/
+          /Generals/Code/Libraries/Source/WWVegas/WWLib/
+          /Generals/Code/Libraries/Source/WWVegas/WWDebug/
+          /Generals/Code/Libraries/Source/WWVegas/Wwutil/
+          EOF
+          git checkout main
+
+      - name: Vendor selected source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=/tmp/cnc-generals
+          DST="$GITHUB_WORKSPACE/third_party/cnc"
+          rm -rf "$DST"
+          mkdir -p "$DST/network/include/GameNetwork" "$DST/network/src/GameNetwork" "$DST/graphics"
+
+          cp "$SRC/LICENSE.md" "$DST/LICENSE.md"
+
+          for f in udp.h Transport.h NetworkDefs.h IPEnumeration.h LANAPI.h LANAPICallbacks.h LANGameInfo.h LANPlayer.h NAT.h networkutil.h; do
+            cp "$SRC/Generals/Code/GameEngine/Include/GameNetwork/$f" "$DST/network/include/GameNetwork/$f"
+          done
+          for f in udp.cpp Transport.cpp IPEnumeration.cpp LANAPI.cpp LANAPICallbacks.cpp LANAPIhandlers.cpp LANGameInfo.cpp NAT.cpp NetworkUtil.cpp; do
+            cp "$SRC/Generals/Code/GameEngine/Source/GameNetwork/$f" "$DST/network/src/GameNetwork/$f"
+          done
+
+          cp "$SRC/Generals/Code/GameEngineDevice/GameEngineDevice.dsp" "$DST/graphics/GameEngineDevice.dsp"
+          cp -R "$SRC/Generals/Code/GameEngineDevice/Include/W3DDevice" "$DST/graphics/W3DDevice-Include"
+          cp -R "$SRC/Generals/Code/GameEngineDevice/Source/W3DDevice" "$DST/graphics/W3DDevice-Source"
+          cp -R "$SRC/Generals/Code/Libraries/Source/WWVegas/WW3D2" "$DST/graphics/WW3D2"
+          cp -R "$SRC/Generals/Code/Libraries/Source/WWVegas/WWMath" "$DST/graphics/WWMath"
+          cp -R "$SRC/Generals/Code/Libraries/Source/WWVegas/WWLib" "$DST/graphics/WWLib"
+          cp -R "$SRC/Generals/Code/Libraries/Source/WWVegas/WWDebug" "$DST/graphics/WWDebug"
+          cp -R "$SRC/Generals/Code/Libraries/Source/WWVegas/Wwutil" "$DST/graphics/Wwutil"
+
+          cat > "$DST/IMPORT.md" <<'EOF'
+          # C&C source slice used by promptemon-steidium
+
+          Source: `electronicarts/CnC_Generals_Zero_Hour`.
+
+          ## Network
+
+          Imported only the low-level UDP transport, LAN discovery/session support, NAT helper and related definitions. The RTS frame-lockstep command system, GameSpy, map/file transfer, RTS disconnect UI and gameplay code are intentionally not vendored.
+
+          ## Graphics
+
+          Imported the W3D device integration plus the underlying WW3D2 renderer and the Westwood math/lib/debug/util support it depends on. This is kept isolated under `third_party/cnc/graphics` so promptemon-steidium can adapt rendering without inheriting Generals gameplay systems.
+
+          This code retains Electronic Arts copyright notices and is covered by the license copied to `LICENSE.md` in this directory.
+          EOF
+
+      - name: Commit imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add third_party/cnc
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Vendor CnC network and W3D graphics source"
+          git push origin HEAD:main
