@@ -29,13 +29,23 @@ jobs:
           New-Item -ItemType Directory -Force demo | Out-Null
           Copy-Item build/Release/promptemon_demo.exe demo/
           @"
-          Put your own Pokemon Rumble World .cia inside a roms folder next to promptemon_demo.exe.
-          The demo reads pii/PIKATYUU_M.bch.cx and pii/anim.bch.cx directly from the CIA.
+          PROMPTEMON STEIDIUM - playable prototype
 
-          Controls:
-          - Left mouse drag: rotate
-          - Mouse wheel: zoom
-          - Idle / Action 1 / Action 2 buttons: animations
+          Current playable flow:
+          1. Nueva partida
+          2. Introduccion
+          3. Choose Rattata, Pidgey or Caterpie
+          4. Enter Proto Hub
+          5. Go to Zona de Caza
+          6. See the wild Pokemon, its IV training reward and possible shiny state
+          7. Fight a complete turn-based battle
+          8. Winning grants XP and can improve the indicated IV
+
+          Notes:
+          - Load/Delete/Export are intentionally disabled in this cut.
+          - Shiny wild Pokemon use a 1/4096 prototype roll.
+          - The old ROM/BCH 3D viewer remains in the source as the promptemon_viewer target.
+          - ROM models are not yet wired into the battle screen in this logic-first cut.
           "@ | Set-Content demo/README.txt
 
       - name: Upload demo
