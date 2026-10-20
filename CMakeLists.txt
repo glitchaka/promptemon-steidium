@@ -39,11 +39,22 @@ add_executable(rumble_probe
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
+    # Current playable prototype: menu -> intro -> starter -> hub -> hunt -> battle.
     add_executable(promptemon_demo WIN32
-        src/demo/PromptemonDemoWin32.cpp
+        src/demo/PromptemonPrototypeWin32.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(promptemon_demo PRIVATE
+        gdi32
+        user32
+    )
+
+    # Preserve the existing ROM/BCH 3D viewer while the playable prototype grows.
+    add_executable(promptemon_viewer WIN32
+        src/demo/PromptemonDemoWin32.cpp
+    )
+    target_compile_definitions(promptemon_viewer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(promptemon_viewer PRIVATE
         promptemon_rom
         promptemon_bch
         opengl32
