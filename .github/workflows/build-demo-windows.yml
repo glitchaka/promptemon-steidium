@@ -1,0 +1,46 @@
+name: Build Windows demo
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tools/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-demo-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --target promptemon_demo
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force demo | Out-Null
+          Copy-Item build/Release/promptemon_demo.exe demo/
+          @"
+          Put your own Pokemon Rumble World .cia inside a roms folder next to promptemon_demo.exe.
+          The demo reads pii/PIKATYUU_M.bch.cx and pii/anim.bch.cx directly from the CIA.
+
+          Controls:
+          - Left mouse drag: rotate
+          - Mouse wheel: zoom
+          - Idle / Action 1 / Action 2 buttons: animations
+          "@ | Set-Content demo/README.txt
+
+      - name: Upload demo
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptemon-steidium-demo-windows
+          path: demo/
+          if-no-files-found: error
