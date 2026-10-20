@@ -3,6 +3,7 @@
 #include "rom/IRomModelSource.h"
 
 #include <algorithm>
+#include <exception>
 #include <system_error>
 
 namespace promptemon::rom {
@@ -48,10 +49,7 @@ RomLibrary RomLibrary::scan(const std::filesystem::path& directory) {
                     case RomFormat::GameBoyColor:
                     case RomFormat::Gba:
                     case RomFormat::NintendoDs:
-                        entry.modelError = "ROM de datos: no contiene un proveedor 3D compatible todavia";
-                        break;
-                    case RomFormat::Nintendo3DsImage:
-                        entry.modelError = "Contenedor 3DS detectado: proveedor NCSD/NCCH pendiente";
+                        entry.modelError = "ROM de datos: no contiene modelos 3D nativos compatibles";
                         break;
                     default:
                         entry.modelError = "Formato sin proveedor de modelos";
