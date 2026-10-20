@@ -9,6 +9,7 @@ add_library(promptemon_rom
     src/rom/Lzh8.cpp
     src/rom/RomInspector.cpp
     src/rom/RomLibrary.cpp
+    src/rom/RomModelArchive.cpp
     src/rom/CiaBchModelSource.cpp
     src/rom/RumbleWorldArchive.cpp
 )
