@@ -83,7 +83,7 @@ private:
 } // namespace
 
 std::unique_ptr<IRomModelSource> openModelSource(const RomInfo& rom) {
-    if (rom.format == RomFormat::Nintendo3DsCia) {
+    if (rom.format == RomFormat::Nintendo3DsCia || rom.format == RomFormat::Nintendo3DsImage) {
         return std::make_unique<CiaBchModelSource>(rom);
     }
     return nullptr;
