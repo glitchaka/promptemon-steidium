@@ -15,6 +15,14 @@ target_include_directories(promptemon_rom PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+add_library(promptemon_bch
+    src/bch/BchScene.cpp
+)
+
+target_include_directories(promptemon_bch PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 add_executable(rom_probe
     tools/rom_probe.cpp
 )
@@ -26,3 +34,17 @@ add_executable(rumble_probe
 )
 
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
+
+if(WIN32)
+    add_executable(promptemon_demo WIN32
+        src/demo/RumbleDemoWin32.cpp
+    )
+    target_link_libraries(promptemon_demo PRIVATE
+        promptemon_rom
+        promptemon_bch
+        opengl32
+        gdi32
+        user32
+        shell32
+    )
+endif()
