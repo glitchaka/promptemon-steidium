@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.20)
+project(promptemon_steidium LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_library(promptemon_rom
+    src/rom/RomInspector.cpp
+)
+
+target_include_directories(promptemon_rom PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+add_executable(rom_probe
+    tools/rom_probe.cpp
+)
+
+target_link_libraries(rom_probe PRIVATE promptemon_rom)
