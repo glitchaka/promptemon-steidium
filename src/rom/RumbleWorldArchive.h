@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -15,7 +17,33 @@ public:
     bool isOpen() const noexcept;
 
     std::vector<std::string> pokemonModels() const;
-    std::vector<std::string> modelResources() const;
+
+    // All BCH containers that can represent a visible 3D resource. Animation-only
+    // containers are omitted from the picker; the selected BCH is still validated
+    // by the BCH parser when it is loaded.
+    std::vector<std::string> modelResources() const {
+        std::vector<std::string> result;
+        result.reserve(files_.size());
+        for (const auto& [path, record] : files_) {
+            (void)record;
+            if (path.size() < 7 || path.compare(path.size() - 7, 7, ".bch.cx") != 0) continue;
+
+            std::string leaf = path.substr(path.find_last_of('/') == std::string::npos
+                                               ? 0
+                                               : path.find_last_of('/') + 1);
+            std::transform(leaf.begin(), leaf.end(), leaf.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (leaf == "anim.bch.cx" || leaf == "mii_anim.bch.cx" ||
+                leaf.find("animation") != std::string::npos) {
+                continue;
+            }
+            result.push_back(path);
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
     bool has(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extract(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extractBch(const std::string& romfsPath) const;
