@@ -8,6 +8,7 @@
 #include <GL/gl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
