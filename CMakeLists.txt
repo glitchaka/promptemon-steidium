@@ -46,6 +46,9 @@ if(WIN32)
         src/demo/PrototypeRomRenderer.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(promptemon_demo PRIVATE /utf-8)
+    endif()
     target_link_libraries(promptemon_demo PRIVATE
         promptemon_rom
         promptemon_bch
