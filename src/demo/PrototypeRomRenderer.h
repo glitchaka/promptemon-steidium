@@ -7,7 +7,6 @@
 #include "demo/RomUiSkin.h"
 #include "storage/RomAssetCache.h"
 
-#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -142,6 +141,11 @@ private:
     void updateBounds(Visual& target);
     std::vector<std::uint8_t> animationForModel(const std::string& modelPath) const;
 
+    bool loadStageComposition(const std::string& requestedModel);
+    void releaseStageComposition();
+    void updateStageCompositionBounds();
+    void drawStageComposition();
+
     const bch::Animation* chooseAnimation(Visual& visual,
                                           const std::vector<std::string>& preferredTokens,
                                           bool preferNonLoop) const;
@@ -160,10 +164,10 @@ private:
     bool playerInAttackRange() const;
 
     void drawVisual(Visual& visual, float x, float y, float z, float scale, float yawDegrees);
-    void drawStage();
     void drawShadow(float x, float y, float z, float radiusX, float radiusZ, float alpha);
     void drawAttackEffect();
     void drawFallbackEffect(float x, float y, float z, float phase);
+    void drawMenuBattleEffect(float x, float y, float z, float phase);
 
     void drawPanel(float x, float y, float w, float h, float alpha = 0.86f);
     void drawButton(const RectF& rect, const std::wstring& label, GameAction action, bool enabled = true);
@@ -188,12 +192,16 @@ private:
     storage::RomAssetCache* archive_ = nullptr;
     RomUiSkin uiSkin_;
 
-    Visual stage_;
+    std::vector<Visual> stageParts_;
+    bch::Vec3 stageBoundsMin_{};
+    bch::Vec3 stageBoundsMax_{};
+    std::string stagePath_;
+    std::string stageDirectory_;
+
     Visual player_;
     Visual wild_;
     Visual third_;
     Visual effect_;
-    std::string stagePath_;
     std::string effectPath_;
 
     GamePage page_ = GamePage::MainMenu;
@@ -222,19 +230,10 @@ private:
     bool battleOver_ = false;
     bool battleWon_ = false;
 
-    unsigned int fontSmall_ = 0;
-    unsigned int fontMedium_ = 0;
-    unsigned int fontLarge_ = 0;
-    HFONT hFontSmall_ = nullptr;
-    HFONT hFontMedium_ = nullptr;
-    HFONT hFontLarge_ = nullptr;
-
-    // Coordinates in the normalized level space. The stage renderer maps the BCH
-    // level bounds into this same world; these are no longer screen-space props.
-    float playerFieldX_ = -2.6f;
-    float playerFieldZ_ = -0.8f;
-    float wildFieldX_ = 2.2f;
-    float wildFieldZ_ = -2.4f;
+    float playerFieldX_ = -3.6f;
+    float playerFieldZ_ = 2.3f;
+    float wildFieldX_ = 3.4f;
+    float wildFieldZ_ = -2.0f;
     float playerYaw_ = 35.0f;
     bool attack1Latch_ = false;
     bool attack2Latch_ = false;
@@ -242,6 +241,7 @@ private:
     float elapsedSeconds_ = 0.0f;
     float effectTimer_ = 0.0f;
     bool effectTargetsWild_ = true;
+    int menuAttackBeat_ = -1;
     std::chrono::steady_clock::time_point lastTick_{};
 };
 
