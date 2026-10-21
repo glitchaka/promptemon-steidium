@@ -10,6 +10,7 @@ namespace {
 
 constexpr wchar_t kConsoleClass[] = L"PromptemonDebugConsoleOverlay";
 constexpr UINT_PTR kInputSubclassId = 0x504D434F;
+constexpr UINT_PTR kHotkeyTimerId = 0x504D4341;
 
 COLORREF backgroundColor() { return RGB(72, 76, 72); }
 COLORREF textColor() { return RGB(225, 225, 225); }
@@ -111,6 +112,10 @@ bool DebugConsoleOverlay::create(HWND parent, Executor executor) {
         gKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHookProc, GetModuleHandleW(nullptr), 0);
     }
 
+    // Polling fallback: this timer belongs to the hidden overlay itself, so the toggle
+    // works even when the OpenGL child owns focus or the low-level hook is rejected.
+    SetTimer(window_, kHotkeyTimerId, 50, nullptr);
+
     append("Promptemon Steidium developer console\r\n");
     append("Ctrl+Shift+C abre/cierra | Esc cierra | help lista comandos\r\n");
     resize();
@@ -119,6 +124,7 @@ bool DebugConsoleOverlay::create(HWND parent, Executor executor) {
 }
 
 void DebugConsoleOverlay::destroy() {
+    if (window_) KillTimer(window_, kHotkeyTimerId);
     if (gHookConsole == this) gHookConsole = nullptr;
     if (gKeyboardHook) {
         UnhookWindowsHookEx(gKeyboardHook);
@@ -245,6 +251,22 @@ LRESULT CALLBACK DebugConsoleOverlay::WindowProc(HWND hwnd, UINT msg, WPARAM wp,
     }
 
     switch (msg) {
+        case WM_TIMER:
+            if (self && wp == kHotkeyTimerId) {
+                const bool cDown = (GetAsyncKeyState('C') & 0x8000) != 0;
+                const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (cDown && ctrl && shift) {
+                    if (!gToggleLatch) {
+                        gToggleLatch = true;
+                        self->toggle();
+                    }
+                } else if (!cDown) {
+                    gToggleLatch = false;
+                }
+                return 0;
+            }
+            break;
         case WM_SIZE:
             if (self) self->layout();
             return 0;
