@@ -1,10 +1,10 @@
-# Local game dumps / ROMs - never commit
-roms/*
-!roms/README.md
+# Local game dumps / ROMs - persistent user data, never tracked
+roms/
 
 *.cia
 *.3ds
 *.cci
+*.cxi
 *.nds
 *.gba
 *.gb
