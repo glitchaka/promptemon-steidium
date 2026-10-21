@@ -6,9 +6,12 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace promptemon::storage {
 namespace {
+
+constexpr const char* kCacheSchema = "promptemon-assets-v2-all-resources";
 
 std::string lowerCopy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -75,7 +78,9 @@ void RomAssetCache::close() {
 }
 
 std::string RomAssetCache::computeSignature(const rom::RomModelArchive& archive) {
-    std::uint64_t hash = 1469598103934665603ull;
+    // The cache schema is part of the signature so a code update that changes
+    // extraction policy cannot silently reuse an old, incomplete manifest.
+    std::uint64_t hash = fnv1a64(kCacheSchema);
     for (const auto& entry : archive.library().entries()) {
         std::error_code ec;
         const auto modified = std::filesystem::last_write_time(entry.info.path, ec);
@@ -90,19 +95,10 @@ std::string RomAssetCache::computeSignature(const rom::RomModelArchive& archive)
 }
 
 bool RomAssetCache::shouldExport(const std::string& virtualPath) {
-    const std::string p = lowerCopy(virtualPath);
-    return endsWith(p, ".bch") || endsWith(p, ".bch.cx") ||
-           endsWith(p, ".bclim") || endsWith(p, ".bclim.cx") ||
-           endsWith(p, ".clim") || endsWith(p, ".clim.cx") ||
-           endsWith(p, ".bcfnt") || endsWith(p, ".bcfnt.cx") ||
-           endsWith(p, ".cfnt") || endsWith(p, ".cfnt.cx") ||
-           endsWith(p, ".bclyt") || endsWith(p, ".bclyt.cx") ||
-           endsWith(p, ".bclan") || endsWith(p, ".bclan.cx") ||
-           endsWith(p, ".bcflan") || endsWith(p, ".bcflan.cx") ||
-           endsWith(p, ".bcres") || endsWith(p, ".bcres.cx") ||
-           contains(p, "/ui/") || contains(p, "::ui/") ||
-           contains(p, "/font/") || contains(p, "::font/") ||
-           contains(p, "/effect/") || contains(p, "::effect/");
+    // Do not guess which ROM resources are useful from filenames. Rumble World
+    // uses generic names and nested containers for a number of UI assets. The
+    // cache is generated once and is persistent, so export every indexed leaf.
+    return !virtualPath.empty();
 }
 
 bool RomAssetCache::isModelResource(const std::string& virtualPath) {
@@ -170,6 +166,7 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
 
     const auto all = archive.resources();
     std::unordered_map<std::string, std::filesystem::path> built;
+    built.reserve(all.size());
 
     for (const auto& virtualPath : all) {
         if (!shouldExport(virtualPath)) continue;
@@ -192,7 +189,7 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
             if (!output) continue;
             built[virtualPath] = relative;
         } catch (...) {
-            // One unsupported resource must not invalidate the rest of the cache.
+            // One unsupported leaf must not invalidate extraction of the rest.
         }
     }
 
@@ -212,7 +209,9 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
         std::ofstream output(manifestTmp, std::ios::binary | std::ios::trunc);
         if (!output) return false;
         output << "#signature\t" << signature << "\n";
+        output << "#schema\t" << kCacheSchema << "\n";
         output << "#virtual_path\tlocal_file\n";
+
         std::vector<std::string> keys;
         keys.reserve(built.size());
         for (const auto& [key, path] : built) {
