@@ -11,7 +11,7 @@
 namespace promptemon::storage {
 namespace {
 
-constexpr const char* kCacheSchema = "promptemon-assets-v2-all-resources";
+constexpr const char* kCacheSchema = "promptemon-assets-v3-lz11-progress";
 
 std::string lowerCopy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -78,8 +78,6 @@ void RomAssetCache::close() {
 }
 
 std::string RomAssetCache::computeSignature(const rom::RomModelArchive& archive) {
-    // The cache schema is part of the signature so a code update that changes
-    // extraction policy cannot silently reuse an old, incomplete manifest.
     std::uint64_t hash = fnv1a64(kCacheSchema);
     for (const auto& entry : archive.library().entries()) {
         std::error_code ec;
@@ -95,9 +93,6 @@ std::string RomAssetCache::computeSignature(const rom::RomModelArchive& archive)
 }
 
 bool RomAssetCache::shouldExport(const std::string& virtualPath) {
-    // Do not guess which ROM resources are useful from filenames. Rumble World
-    // uses generic names and nested containers for a number of UI assets. The
-    // cache is generated once and is persistent, so export every indexed leaf.
     return !virtualPath.empty();
 }
 
@@ -159,7 +154,8 @@ bool RomAssetCache::loadManifest(const std::filesystem::path& directory,
 
 bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
                                   const std::filesystem::path& directory,
-                                  const std::string& signature) {
+                                  const std::string& signature,
+                                  const ProgressCallback& progress) {
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
     if (ec) return false;
@@ -168,7 +164,9 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
     std::unordered_map<std::string, std::filesystem::path> built;
     built.reserve(all.size());
 
-    for (const auto& virtualPath : all) {
+    for (std::size_t index = 0; index < all.size(); ++index) {
+        const auto& virtualPath = all[index];
+        if (progress) progress(index, all.size(), virtualPath);
         if (!shouldExport(virtualPath)) continue;
         try {
             const auto bytes = archive.extractResource(virtualPath);
@@ -192,6 +190,7 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
             // One unsupported leaf must not invalidate extraction of the rest.
         }
     }
+    if (progress) progress(all.size(), all.size(), std::string{});
 
     bool hasModel = false;
     for (const auto& [virtualPath, relative] : built) {
@@ -237,12 +236,13 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
 }
 
 bool RomAssetCache::prepare(rom::RomModelArchive& archive,
-                            const std::filesystem::path& baseDirectory) {
+                            const std::filesystem::path& baseDirectory,
+                            ProgressCallback progress) {
     close();
     const std::string newSignature = computeSignature(archive);
     const std::filesystem::path directory = baseDirectory / std::filesystem::u8path(newSignature);
     if (loadManifest(directory, newSignature)) return true;
-    return buildManifest(archive, directory, newSignature);
+    return buildManifest(archive, directory, newSignature, progress);
 }
 
 std::vector<std::string> RomAssetCache::resources() const {
