@@ -15,19 +15,22 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -A x64
 
-      - name: Build
-        run: cmake --build build --config Release --target promptemon_demo
+      - name: Build demo and resource tools
+        run: cmake --build build --config Release --target promptemon_demo promptemon_resource_packager promptemon_resource_sfx
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force demo | Out-Null
           Copy-Item build/Release/promptemon_demo.exe demo/
+          Copy-Item build/Release/promptemon_resource_packager.exe demo/
+          Copy-Item build/Release/promptemon_resource_sfx.exe demo/
           @"
           PROMPTEMON STEIDIUM - stage scene
 
-          Place the installed Rumble World bundle beside the executable at assets/resources-tx.
-          This build contains no prototype menu, HUD or invented gameplay layer: it renders one complete stage at full scene scale.
+          promptemon_demo.exe renders the stage scene.
+          promptemon_resource_packager.exe creates the self-extracting resource bundle from resources-tx.
+          promptemon_resource_sfx.exe is the SFX stub used by the packager.
           "@ | Set-Content demo/README.txt
 
       - name: Upload demo
