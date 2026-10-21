@@ -1,4 +1,6 @@
 #include "storage/RomAssetCache.h"
+#include "rom/Lz11.h"
+#include "rom/Lzh8.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -51,6 +53,21 @@ std::vector<std::uint8_t> readBytes(const std::filesystem::path& path) {
     return bytes;
 }
 
+std::vector<std::uint8_t> decodeKnown(std::vector<std::uint8_t> data) {
+    for (unsigned pass = 0; pass < 4; ++pass) {
+        if (promptemon::rom::Lzh8::isCompressed(data)) {
+            data = promptemon::rom::Lzh8::decompress(data);
+            continue;
+        }
+        if (promptemon::rom::Lz11::isCompressed(data)) {
+            data = promptemon::rom::Lz11::decompress(data);
+            continue;
+        }
+        break;
+    }
+    return data;
+}
+
 std::string sanitize(std::string value) {
     for (char& c : value) {
         if (c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') c = '_';
@@ -62,7 +79,7 @@ void indexDarc(const std::filesystem::path& directory,
                const std::filesystem::path& source,
                const std::string& outerVirtual,
                std::unordered_map<std::string, std::filesystem::path>& loaded) {
-    const auto data = readBytes(source);
+    auto data = decodeKnown(readBytes(source));
     if (data.size() < 0x1C || !magicAt(data, 0, "darc")) return;
     if (!(data[4] == 0xFF && data[5] == 0xFE)) return;
 
@@ -114,6 +131,14 @@ void indexDarc(const std::filesystem::path& directory,
 
         if (fullPath.empty() || static_cast<std::uint64_t>(dataOffset) + length > data.size()) continue;
 
+        std::vector<std::uint8_t> leaf(data.begin() + dataOffset, data.begin() + dataOffset + length);
+        try {
+            leaf = decodeKnown(std::move(leaf));
+        } catch (...) {
+            continue;
+        }
+        if (leaf.empty()) continue;
+
         const auto destination = expandedRoot / std::filesystem::u8path(fullPath);
         std::filesystem::create_directories(destination.parent_path(), ec);
         if (ec) {
@@ -123,10 +148,8 @@ void indexDarc(const std::filesystem::path& directory,
 
         std::ofstream output(destination, std::ios::binary | std::ios::trunc);
         if (!output) continue;
-        if (length != 0) {
-            output.write(reinterpret_cast<const char*>(data.data() + dataOffset), static_cast<std::streamsize>(length));
-            if (!output) continue;
-        }
+        output.write(reinterpret_cast<const char*>(leaf.data()), static_cast<std::streamsize>(leaf.size()));
+        if (!output) continue;
         output.close();
 
         const auto relative = std::filesystem::relative(destination, directory, ec);
@@ -134,7 +157,12 @@ void indexDarc(const std::filesystem::path& directory,
             ec.clear();
             continue;
         }
-        loaded[outerVirtual + "::" + fullPath] = relative;
+        const std::string nestedVirtual = outerVirtual + "::" + fullPath;
+        loaded[nestedVirtual] = relative;
+
+        if (leaf.size() >= 4 && magicAt(leaf, 0, "darc")) {
+            indexDarc(directory, destination, nestedVirtual, loaded);
+        }
     }
 }
 
