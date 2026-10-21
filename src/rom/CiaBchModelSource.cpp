@@ -1,5 +1,6 @@
 #include "rom/IRomModelSource.h"
 
+#include "rom/Lzh8.h"
 #include "rom/RumbleWorldArchive.h"
 
 #include <memory>
@@ -25,11 +26,25 @@ public:
     }
 
     const RomInfo& romInfo() const noexcept override { return info_; }
-    std::string providerName() const override { return "Nintendo 3DS BCH"; }
+    std::string providerName() const override { return "Nintendo 3DS RomFS"; }
     std::vector<ModelResource> models() const override { return resources_; }
+    std::vector<std::string> allResources() const override {
+        return archive_ ? archive_->resourcePaths() : std::vector<std::string>{};
+    }
+
+    bool hasResource(const std::string& resourceId) const override {
+        return archive_ && archive_->has(resourceId);
+    }
+
+    std::vector<std::uint8_t> extractResource(const std::string& resourceId) const override {
+        if (!archive_) throw std::runtime_error("3DS resource source is closed");
+        auto data = archive_->extract(resourceId);
+        if (Lzh8::isCompressed(data)) data = Lzh8::decompress(data);
+        return data;
+    }
 
     bool hasBch(const std::string& resourceId) const override {
-        return archive_ && archive_->has(resourceId);
+        return hasResource(resourceId);
     }
 
     std::vector<std::uint8_t> extractBch(const std::string& resourceId) const override {
