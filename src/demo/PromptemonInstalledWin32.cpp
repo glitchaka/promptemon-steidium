@@ -14,34 +14,23 @@ std::filesystem::path diagnosticBundlePath() {
 }
 
 void dumpUiScanEarly() {
-    const auto bundle = diagnosticBundlePath();
-    const auto scan = bundle / L"ui_scan.tsv";
+    const auto scan = diagnosticBundlePath() / L"ui_scan.tsv";
     std::cout << "\n[UI] Diagnostico inmediato: " << scan.u8string() << '\n';
-
     std::ifstream input(scan, std::ios::binary);
     if (!input) {
-        std::cout << "[UI][ERROR] ui_scan.tsv no existe. La carga fallo antes de completar RomUiSkin::load().\n";
+        std::cout << "[UI][ERROR] ui_scan.tsv no existe.\n";
         return;
     }
-
     std::string line;
-    bool foundSummary = false;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::cout << "[UI] " << line << '\n';
-        if (line.rfind("SUMMARY\t", 0) == 0) foundSummary = true;
-    }
-    if (!foundSummary) {
-        std::cout << "[UI][ERROR] ui_scan.tsv existe pero no contiene SUMMARY; la exploracion se interrumpio antes de terminar.\n";
     }
     std::cout.flush();
 }
 
 int WINAPI PromptemonDiagnosticMessageBoxW(HWND hwnd, LPCWSTR text, LPCWSTR caption, UINT type) {
-    if (text && wcsstr(text, L"recursos de interfaz") != nullptr) {
-        std::cout << "[RENDER][ERROR] RomUiSkin no quedo listo. Volcando diagnostico antes del cuadro de error...\n";
-        dumpUiScanEarly();
-    }
+    if (text && wcsstr(text, L"recursos de interfaz") != nullptr) dumpUiScanEarly();
     return ::MessageBoxW(hwnd, text, caption, type);
 }
 
@@ -53,53 +42,30 @@ int WINAPI PromptemonDiagnosticMessageBoxW(HWND hwnd, LPCWSTR text, LPCWSTR capt
 #undef wWinMain
 #undef MessageBoxW
 
+#include "demo/DebugConsoleOverlay.h"
+
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
 #include <sstream>
-#include <thread>
 #include <vector>
 
 namespace {
 
+constexpr int kDebugHotkeyId = 0x50C0;
+promptemon::demo::DebugConsoleOverlay gDevConsole;
+std::filesystem::path gBundlePath;
+
 void openDiagnosticConsole() {
     if (!AllocConsole()) return;
-
     FILE* stream = nullptr;
     freopen_s(&stream, "CONOUT$", "w", stdout);
     freopen_s(&stream, "CONOUT$", "w", stderr);
-    freopen_s(&stream, "CONIN$", "r", stdin);
-
     SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-    SetConsoleTitleW(L"Promptemon Steidium - Monitor y consola de debug");
-
-    std::cout << "========================================\n";
-    std::cout << " Promptemon Steidium - Monitor de carga\n";
-    std::cout << "========================================\n";
-}
-
-void focusDebugConsole() {
-    HWND console = GetConsoleWindow();
-    if (!console) return;
-    ShowWindow(console, SW_RESTORE);
-    SetForegroundWindow(console);
-    BringWindowToTop(console);
-    std::cout << "\n[CONSOLA] Debug activo. Escribe 'help'.\n> " << std::flush;
-}
-
-LRESULT CALLBACK InstalledWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_KEYDOWN && wp == 'C' &&
-        (GetKeyState(VK_CONTROL) & 0x8000) &&
-        (GetKeyState(VK_SHIFT) & 0x8000)) {
-        focusDebugConsole();
-        return 0;
-    }
-    return WndProc(hwnd, msg, wp, lp);
-}
-
-void logPath(const char* label, const std::filesystem::path& path) {
-    std::cout << "[RUTA] " << label << ": " << path.u8string() << '\n';
+    SetConsoleTitleW(L"Promptemon Steidium - Monitor de carga");
+    std::cout << "========================================\n"
+              << " Promptemon Steidium - Monitor de carga\n"
+              << "========================================\n";
 }
 
 std::string lowerAscii(std::string value) {
@@ -118,181 +84,170 @@ std::size_t countContaining(const std::vector<std::string>& resources, const std
     return count;
 }
 
-void dumpUiScan(const std::filesystem::path& bundle) {
-    const auto scan = bundle / "ui_scan.tsv";
-    std::cout << "\n[DIAGNOSTICO UI] " << scan.u8string() << '\n';
+std::string inventoryText(const std::vector<std::string>& resources) {
+    std::ostringstream out;
+    out << "resources=" << resources.size()
+        << " font=" << countContaining(resources, "font")
+        << " cfnt=" << countContaining(resources, "cfnt")
+        << " bclim=" << countContaining(resources, "bclim")
+        << " ui=" << countContaining(resources, "ui")
+        << " arc=" << countContaining(resources, ".arc")
+        << " stage=" << countContaining(resources, "stage")
+        << " town=" << countContaining(resources, "town")
+        << " pii=" << countContaining(resources, "pii/");
+    return out.str();
+}
 
-    std::ifstream input(scan, std::ios::binary);
-    if (!input) {
-        std::cout << "[UI][ERROR] ui_scan.tsv no existe.\n";
-        return;
-    }
-
+std::string readUiScan() {
+    std::ifstream input(gBundlePath / "ui_scan.tsv", std::ios::binary);
+    if (!input) return "[UI] ui_scan.tsv no existe";
+    std::ostringstream out;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        std::cout << "[UI] " << line << '\n';
+        out << "[UI] " << line << "\r\n";
     }
+    return out.str();
 }
 
-void logInventory(const std::vector<std::string>& resources) {
-    std::cout << "[INVENTARIO] total=" << resources.size()
-              << " font=" << countContaining(resources, "font")
-              << " cfnt=" << countContaining(resources, "cfnt")
-              << " bclim=" << countContaining(resources, "bclim")
-              << " ui=" << countContaining(resources, "ui")
-              << " arc=" << countContaining(resources, ".arc")
-              << " stage=" << countContaining(resources, "stage")
-              << " town=" << countContaining(resources, "town")
-              << " pii=" << countContaining(resources, "pii/")
-              << '\n';
-}
-
-void logPokemonModels() {
-    std::cout << "[POKEMON] Modelos resueltos:\n";
-    for (const auto& species : kSpecies) {
-        const std::string& model = modelFor(species);
-        std::wcout << L"  dex=" << species.dex << L" " << species.name << L" -> ";
-        if (model.empty()) std::wcout << L"<NO ENCONTRADO>\n";
-        else std::cout << model << '\n';
-    }
-}
-
-void logStageCandidates(std::size_t maxItems = 10) {
-    struct Candidate { int score; std::string path; };
-    std::vector<Candidate> candidates;
+std::vector<std::pair<int, std::string>> stageCandidates() {
+    std::vector<std::pair<int, std::string>> result;
     for (const auto& path : gModelResources) {
         const int score = stageScore(path);
-        if (score > 0) candidates.push_back({score, path});
+        if (score > 0) result.emplace_back(score, path);
     }
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-        return a.score > b.score;
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+        return a.first > b.first;
     });
-
-    std::cout << "[STAGE] Candidatos:\n";
-    const std::size_t limit = std::min(maxItems, candidates.size());
-    for (std::size_t i = 0; i < limit; ++i) {
-        std::cout << "  [" << i + 1 << "] score=" << candidates[i].score << " " << candidates[i].path << '\n';
-    }
-    if (limit == 0) std::cout << "  <NINGUNO>\n";
+    return result;
 }
 
-void printResourceInfo(const std::string& path) {
-    if (!gAssets.hasResource(path)) {
-        std::cout << "[RESOURCE] No existe: " << path << '\n';
-        return;
-    }
-    try {
-        const auto bytes = gAssets.extractResource(path);
-        std::cout << "[RESOURCE] " << path << " size=" << bytes.size() << " bytes header=";
-        const std::size_t n = std::min<std::size_t>(16, bytes.size());
-        for (std::size_t i = 0; i < n; ++i) {
-            std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(bytes[i]) << ' ';
-        }
-        std::cout << std::dec << '\n';
-    } catch (const std::exception& e) {
-        std::cout << "[RESOURCE][ERROR] " << e.what() << '\n';
-    } catch (...) {
-        std::cout << "[RESOURCE][ERROR] excepcion desconocida\n";
-    }
+std::string debugHelp() {
+    return
+        "help                 lista comandos\r\n"
+        "status               estado del runtime\r\n"
+        "ui                   diagnostico de fuente/interfaz\r\n"
+        "find <texto>         busca recursos\r\n"
+        "models               modelos Pokemon resueltos\r\n"
+        "model <dex>          modelo de un Pokemon\r\n"
+        "stages               candidatos de escenario\r\n"
+        "resource <ruta>      tamano/cabecera del recurso\r\n"
+        "action <100-116>     ejecuta una accion del juego\r\n"
+        "clear                limpia la consola\r\n"
+        "quit                 cierra Promptemon";
 }
 
-void printDebugHelp() {
-    std::cout << "\nComandos disponibles:\n"
-              << "  help                 muestra esta ayuda\n"
-              << "  status               estado general del runtime\n"
-              << "  ui                   vuelca ui_scan.tsv\n"
-              << "  find <texto>         busca recursos por nombre/ruta\n"
-              << "  models               modelos resueltos de Pokemon\n"
-              << "  model <dex>          modelo resuelto para un dex\n"
-              << "  stages               candidatos de escenario y score\n"
-              << "  resource <ruta>      tamano y cabecera de un recurso\n"
-              << "  action <id>          envia un GameAction (100-116)\n"
-              << "  quit                 cierra el juego y el proceso\n\n";
-}
+std::string executeDebugCommand(const std::string& raw) {
+    std::istringstream input(raw);
+    std::string command;
+    input >> command;
+    command = lowerAscii(command);
+    std::ostringstream out;
 
-void debugCommandLoop(std::filesystem::path bundle) {
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        if (line.empty()) {
-            std::cout << "> " << std::flush;
-            continue;
-        }
+    if (command.empty()) return {};
+    if (command == "help") return debugHelp();
 
-        std::istringstream input(line);
-        std::string command;
-        input >> command;
-        command = lowerAscii(command);
+    if (command == "status") {
+        const auto resources = gAssets.resources();
+        out << "[STATUS] screen=" << static_cast<int>(gScreen)
+            << " models=" << gModelResources.size() << "\r\n";
+        out << "[STATUS] " << inventoryText(resources) << "\r\n";
+        out << "[STATUS] stage=" << (gStageModel.empty() ? "<NONE>" : gStageModel) << "\r\n";
+        out << "[STATUS] effect=" << (gEffectModel.empty() ? "<NONE>" : gEffectModel);
+        return out.str();
+    }
 
-        if (command == "help") {
-            printDebugHelp();
-        } else if (command == "status") {
-            const auto resources = gAssets.resources();
-            std::cout << "[STATUS] screen=" << static_cast<int>(gScreen)
-                      << " resources=" << resources.size()
-                      << " models=" << gModelResources.size() << '\n';
-            std::cout << "[STATUS] stage=" << (gStageModel.empty() ? "<NONE>" : gStageModel) << '\n';
-            std::cout << "[STATUS] effect=" << (gEffectModel.empty() ? "<NONE>" : gEffectModel) << '\n';
-            logInventory(resources);
-        } else if (command == "ui") {
-            dumpUiScan(bundle);
-        } else if (command == "find") {
-            std::string term;
-            std::getline(input >> std::ws, term);
-            term = lowerAscii(term);
-            if (term.empty()) {
-                std::cout << "uso: find <texto>\n";
-            } else {
-                std::size_t shown = 0;
-                for (const auto& resource : gAssets.resources()) {
-                    if (lowerAscii(resource).find(term) == std::string::npos) continue;
-                    std::cout << "  " << resource << '\n';
-                    if (++shown >= 50) {
-                        std::cout << "  ... limite de 50 resultados\n";
-                        break;
-                    }
-                }
-                std::cout << "[FIND] mostrados=" << shown << '\n';
-            }
-        } else if (command == "models") {
-            logPokemonModels();
-        } else if (command == "model") {
-            int dex = 0;
-            input >> dex;
-            bool found = false;
-            for (const auto& species : kSpecies) {
-                if (species.dex != dex) continue;
-                const auto& model = modelFor(species);
-                std::cout << "[MODEL] dex=" << dex << " -> " << (model.empty() ? "<NO ENCONTRADO>" : model) << '\n';
-                found = true;
+    if (command == "ui") return readUiScan();
+
+    if (command == "find") {
+        std::string term;
+        std::getline(input >> std::ws, term);
+        term = lowerAscii(term);
+        if (term.empty()) return "uso: find <texto>";
+        std::size_t shown = 0;
+        for (const auto& resource : gAssets.resources()) {
+            if (lowerAscii(resource).find(term) == std::string::npos) continue;
+            out << resource << "\r\n";
+            if (++shown >= 50) {
+                out << "... limite de 50 resultados\r\n";
                 break;
             }
-            if (!found) std::cout << "[MODEL] dex no registrado en kSpecies\n";
-        } else if (command == "stages") {
-            logStageCandidates();
-        } else if (command == "resource") {
-            std::string path;
-            std::getline(input >> std::ws, path);
-            if (path.empty()) std::cout << "uso: resource <ruta virtual>\n";
-            else printResourceInfo(path);
-        } else if (command == "action") {
-            int id = 0;
-            input >> id;
-            if (id < 100 || id > 116 || !gWindow) {
-                std::cout << "[ACTION] id invalido; rango actual 100-116\n";
-            } else {
-                PostMessageW(gWindow, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), 0);
-                std::cout << "[ACTION] enviado " << id << '\n';
-            }
-        } else if (command == "quit" || command == "exit") {
-            if (gWindow) PostMessageW(gWindow, WM_CLOSE, 0, 0);
-            break;
-        } else {
-            std::cout << "[CONSOLA] comando desconocido: " << command << " (usa help)\n";
         }
-
-        std::cout << "> " << std::flush;
+        out << "[FIND] mostrados=" << shown;
+        return out.str();
     }
+
+    if (command == "models") {
+        for (const auto& species : kSpecies) {
+            const auto& model = modelFor(species);
+            out << "dex=" << species.dex << " -> " << (model.empty() ? "<NO ENCONTRADO>" : model) << "\r\n";
+        }
+        return out.str();
+    }
+
+    if (command == "model") {
+        int dex = 0;
+        input >> dex;
+        for (const auto& species : kSpecies) {
+            if (species.dex != dex) continue;
+            const auto& model = modelFor(species);
+            out << "[MODEL] dex=" << dex << " -> " << (model.empty() ? "<NO ENCONTRADO>" : model);
+            return out.str();
+        }
+        return "[MODEL] dex no registrado";
+    }
+
+    if (command == "stages") {
+        const auto candidates = stageCandidates();
+        const std::size_t limit = std::min<std::size_t>(12, candidates.size());
+        for (std::size_t i = 0; i < limit; ++i) {
+            out << '[' << i + 1 << "] score=" << candidates[i].first << ' ' << candidates[i].second << "\r\n";
+        }
+        if (limit == 0) out << "<NINGUNO>";
+        return out.str();
+    }
+
+    if (command == "resource") {
+        std::string path;
+        std::getline(input >> std::ws, path);
+        if (path.empty()) return "uso: resource <ruta virtual>";
+        if (!gAssets.hasResource(path)) return "[RESOURCE] No existe: " + path;
+        try {
+            const auto bytes = gAssets.extractResource(path);
+            out << "[RESOURCE] size=" << bytes.size() << " header=";
+            const std::size_t n = std::min<std::size_t>(16, bytes.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(bytes[i]) << ' ';
+            }
+            return out.str();
+        } catch (...) {
+            return "[RESOURCE][ERROR] no se pudo extraer";
+        }
+    }
+
+    if (command == "action") {
+        int id = 0;
+        input >> id;
+        if (id < 100 || id > 116 || !gWindow) return "[ACTION] id invalido (100-116)";
+        PostMessageW(gWindow, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), 0);
+        out << "[ACTION] enviado " << id;
+        return out.str();
+    }
+
+    if (command == "clear") {
+        return "[CONSOLA] clear se aplica al reiniciar el panel por ahora";
+    }
+
+    if (command == "quit" || command == "exit") {
+        if (gWindow) PostMessageW(gWindow, WM_CLOSE, 0, 0);
+        return "[CONSOLA] cerrando...";
+    }
+
+    return "[CONSOLA] comando desconocido: " + command + " (usa help)";
+}
+
+void dumpUiScanToStdout() {
+    std::cout << readUiScan() << '\n';
 }
 
 [[noreturn]] void fatalExit(int code) {
@@ -300,6 +255,19 @@ void debugCommandLoop(std::filesystem::path bundle) {
     std::cout.flush();
     FreeConsole();
     ExitProcess(static_cast<UINT>(code));
+}
+
+LRESULT CALLBACK InstalledWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_HOTKEY && static_cast<int>(wp) == kDebugHotkeyId) {
+        gDevConsole.toggle();
+        return 0;
+    }
+    if (msg == WM_SIZE) gDevConsole.resize();
+    if (msg == WM_DESTROY) {
+        UnregisterHotKey(hwnd, kDebugHotkeyId);
+        gDevConsole.destroy();
+    }
+    return WndProc(hwnd, msg, wp, lp);
 }
 
 bool registerInstalledGameWindowClass(HINSTANCE instance) {
@@ -335,89 +303,72 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
     const HRESULT ole = OleInitialize(nullptr);
     const bool uninitializeOle = SUCCEEDED(ole);
-    std::cout << "[OLE] " << (uninitializeOle ? "OK" : "continuando sin inicializacion completa") << '\n';
+    std::cout << "[OLE] " << (uninitializeOle ? "OK" : "continuando") << '\n';
 
     promptemon::storage::LocalDatabase database;
     std::cout << "[DB] Abriendo player.db...\n";
     if (!database.open()) {
-        std::cout << "[ERROR] No se pudo abrir player.db.\n";
-        MessageBoxW(nullptr,
-                    L"No se pudo abrir player.db junto al ejecutable.",
-                    L"Promptemon Steidium", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"No se pudo abrir player.db junto al ejecutable.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
         if (uninitializeOle) OleUninitialize();
         fatalExit(1);
     }
     std::cout << "[DB] OK\n";
-    logPath("player.db", database.path());
 
-    const std::filesystem::path bundle =
-        database.path().parent_path() / L"assets" / L"resources-tx";
-    logPath("bundle", bundle);
-
+    gBundlePath = database.path().parent_path() / L"assets" / L"resources-tx";
+    std::cout << "[RUTA] bundle: " << gBundlePath.u8string() << '\n';
     std::cout << "[BUNDLE] Abriendo cache instalada...\n";
-    if (!gAssets.openInstalledDirectory(bundle)) {
-        std::cout << "[ERROR] No se pudo abrir assets/resources-tx como cache instalada.\n";
-        std::cout << "        Verifica bundle_manifest.tsv y files/romfs.\n";
-        MessageBoxW(nullptr,
-                    L"Faltan los recursos del juego.\n\n"
-                    L"Ejecuta PromptemonResources.exe una vez. Ese archivo instala "
-                    L"el subset necesario junto al juego; no necesitas seleccionar la ROM.",
-                    L"Promptemon Steidium", MB_OK | MB_ICONWARNING);
+    if (!gAssets.openInstalledDirectory(gBundlePath)) {
+        MessageBoxW(nullptr, L"Faltan los recursos del juego. Ejecuta PromptemonResources.exe.", L"Promptemon Steidium", MB_OK | MB_ICONWARNING);
         if (uninitializeOle) OleUninitialize();
         fatalExit(1);
     }
 
     const auto allResources = gAssets.resources();
-    std::cout << "[BUNDLE] OK - " << allResources.size() << " recursos indexados.\n";
-    logInventory(allResources);
+    std::cout << "[BUNDLE] OK - " << inventoryText(allResources) << '\n';
 
     gModelResources = gAssets.modelResources();
     gResolvedModels.clear();
-    std::cout << "[MODELOS] " << gModelResources.size() << " BCH de modelo utilizables.\n";
+    std::cout << "[MODELOS] " << gModelResources.size() << " BCH utilizables.\n";
     if (gModelResources.empty()) {
-        std::cout << "[ERROR] El bundle no contiene modelos BCH utilizables.\n";
-        MessageBoxW(nullptr,
-                    L"El bundle instalado no contiene modelos BCH utilizables.\n"
-                    L"Vuelve a generar PromptemonResources.exe desde resources-tx.",
-                    L"Bundle de recursos invalido", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"El bundle no contiene modelos BCH utilizables.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
         if (uninitializeOle) OleUninitialize();
         fatalExit(1);
     }
 
-    logPokemonModels();
-    logStageCandidates();
+    for (const auto& species : kSpecies) {
+        std::cout << "[POKEMON] dex=" << species.dex << " model=" << modelFor(species) << '\n';
+    }
+    const auto candidates = stageCandidates();
+    for (std::size_t i = 0; i < std::min<std::size_t>(10, candidates.size()); ++i) {
+        std::cout << "[STAGE] score=" << candidates[i].first << ' ' << candidates[i].second << '\n';
+    }
 
-    std::cout << "[WIN32] Registrando ventana principal...\n";
     if (!registerInstalledGameWindowClass(instance)) {
-        std::cout << "[ERROR] RegisterClassW fallo. GetLastError=" << GetLastError() << '\n';
         if (uninitializeOle) OleUninitialize();
         fatalExit(1);
     }
-    std::cout << "[WIN32] OK\n";
 
-    std::cout << "[RENDER] Creando ventana y cargando OpenGL/UI/fuente...\n";
+    std::cout << "[RENDER] Creando ventana/OpenGL...\n";
     HWND window = createInstalledGameWindow(instance, showCommand);
     if (!window) {
-        std::cout << "[ERROR] createInstalledGameWindow fallo. GetLastError=" << GetLastError() << '\n';
-        dumpUiScan(bundle);
-        std::cout << "\n[DETENIDO] El renderizador fallo antes de crear la ventana.\n";
-        MessageBoxW(nullptr,
-                    L"No se pudo iniciar el renderizador.\n"
-                    L"Revisa el monitor de carga para ver el fallo exacto.",
-                    L"Error de renderizado", MB_OK | MB_ICONERROR);
+        dumpUiScanToStdout();
         if (uninitializeOle) OleUninitialize();
         fatalExit(1);
     }
 
-    std::cout << "[RENDER] OK - ventana inicializada.\n";
-    std::cout << "[RENDER] stage seleccionado: " << (gStageModel.empty() ? "<NONE>" : gStageModel) << '\n';
-    std::cout << "[RENDER] effect seleccionado: " << (gEffectModel.empty() ? "<NONE>" : gEffectModel) << '\n';
-    dumpUiScan(bundle);
+    RegisterHotKey(window, kDebugHotkeyId, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'C');
+    if (gDevConsole.create(window, executeDebugCommand)) {
+        gDevConsole.append("[STARTUP] " + inventoryText(allResources) + "\r\n");
+        gDevConsole.append("[STARTUP] models=" + std::to_string(gModelResources.size()) + "\r\n");
+        gDevConsole.append("[STARTUP] stage=" + (gStageModel.empty() ? std::string("<NONE>") : gStageModel) + "\r\n");
+        gDevConsole.append("[STARTUP] effect=" + (gEffectModel.empty() ? std::string("<NONE>") : gEffectModel) + "\r\n");
+        gDevConsole.append(readUiScan());
+    }
 
-    std::cout << "[JUEGO] Promptemon Steidium ejecutando.\n";
-    std::cout << "[CONSOLA] Ctrl+Shift+C trae esta consola al frente. Escribe 'help'.\n> " << std::flush;
-
-    std::thread(debugCommandLoop, bundle).detach();
+    std::cout << "[RENDER] stage=" << (gStageModel.empty() ? "<NONE>" : gStageModel) << '\n';
+    std::cout << "[RENDER] effect=" << (gEffectModel.empty() ? "<NONE>" : gEffectModel) << '\n';
+    dumpUiScanToStdout();
+    std::cout << "[JUEGO] Ejecutando. Ctrl+Shift+C abre la consola interna estilo Half-Life.\n";
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -425,8 +376,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         DispatchMessageW(&message);
     }
 
-    std::cout << "\n[SALIDA] Codigo " << static_cast<int>(message.wParam) << '\n';
-    std::cout.flush();
     if (uninitializeOle) OleUninitialize();
     FreeConsole();
     return static_cast<int>(message.wParam);
