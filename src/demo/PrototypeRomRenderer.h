@@ -1,10 +1,12 @@
 #pragma once
 
 #include <windows.h>
+#include <windowsx.h>
 
 #include "bch/BchScene.h"
 #include "rom/RomModelArchive.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -57,8 +59,8 @@ public:
     void move(int x, int y, int width, int height);
     void tick();
 
-    bool setStageModel(const std::string& modelPath);
-    bool setEffectModel(const std::string& modelPath);
+    void setStageModel(const std::string& modelPath);
+    void setEffectModel(const std::string& modelPath);
 
     void showMainMenu();
     void showIntro();
