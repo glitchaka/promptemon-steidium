@@ -17,9 +17,11 @@ public:
 
     std::vector<std::string> pokemonModels() const;
     std::vector<std::string> modelResources() const;
+    std::vector<std::string> resourcePaths() const;
 
     bool has(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extract(const std::string& romfsPath) const;
+    std::vector<std::uint8_t> extractResource(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extractBch(const std::string& romfsPath) const;
 
 private:
