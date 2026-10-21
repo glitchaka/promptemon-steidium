@@ -123,8 +123,10 @@ void DebugConsoleOverlay::resize() {
     if (!window_ || !parent_) return;
     RECT rc{};
     GetClientRect(parent_, &rc);
-    const int width = std::max(1L, rc.right - rc.left);
-    const int height = std::max(240, static_cast<int>((rc.bottom - rc.top) * 0.66));
+    const int clientWidth = static_cast<int>(rc.right - rc.left);
+    const int clientHeight = static_cast<int>(rc.bottom - rc.top);
+    const int width = std::max(1, clientWidth);
+    const int height = std::max(240, static_cast<int>(clientHeight * 0.66f));
     SetWindowPos(window_, HWND_TOP, 0, 0, width, height, SWP_NOACTIVATE);
     layout();
 }
@@ -135,11 +137,15 @@ void DebugConsoleOverlay::layout() {
     GetClientRect(window_, &rc);
     constexpr int pad = 12;
     constexpr int inputHeight = 30;
-    MoveWindow(output_, pad, pad,
-               std::max(1, rc.right - pad * 2),
-               std::max(1, rc.bottom - inputHeight - pad * 3), TRUE);
-    MoveWindow(input_, pad, rc.bottom - inputHeight - pad,
-               std::max(1, rc.right - pad * 2), inputHeight, TRUE);
+
+    const int clientWidth = static_cast<int>(rc.right - rc.left);
+    const int clientHeight = static_cast<int>(rc.bottom - rc.top);
+    const int contentWidth = std::max(1, clientWidth - pad * 2);
+    const int outputHeight = std::max(1, clientHeight - inputHeight - pad * 3);
+    const int inputY = std::max(pad, clientHeight - inputHeight - pad);
+
+    MoveWindow(output_, pad, pad, contentWidth, outputHeight, TRUE);
+    MoveWindow(input_, pad, inputY, contentWidth, inputHeight, TRUE);
 }
 
 void DebugConsoleOverlay::appendWide(const std::wstring& text) {
@@ -157,13 +163,17 @@ void DebugConsoleOverlay::submit() {
     if (!input_ || !executor_) return;
     const int length = GetWindowTextLengthW(input_);
     if (length <= 0) return;
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
+
+    std::wstring wide(static_cast<std::size_t>(length + 1), L'\0');
     GetWindowTextW(input_, wide.data(), length + 1);
+    wide.resize(static_cast<std::size_t>(length));
     SetWindowTextW(input_, L"");
 
-    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);
     std::string command(static_cast<std::size_t>(std::max(bytes, 0)), '\0');
-    if (bytes > 0) WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, command.data(), bytes, nullptr, nullptr);
+    if (bytes > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, command.data(), bytes, nullptr, nullptr);
+    }
 
     append("> " + command + "\r\n");
     std::string result = executor_(command);
