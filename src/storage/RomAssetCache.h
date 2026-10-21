@@ -39,8 +39,7 @@ private:
     static std::string computeSignature(const rom::RomModelArchive& archive);
     static bool shouldExport(const std::string& virtualPath);
     static bool isModelResource(const std::string& virtualPath);
-    static std::string cacheFileName(const std::string& virtualPath);
-    static std::string categoryFor(const std::string& virtualPath);
+    static std::filesystem::path relativePathFor(const std::string& virtualPath);
 
     bool loadManifest(const std::filesystem::path& directory, const std::string& expectedSignature);
     bool buildManifest(rom::RomModelArchive& archive,
