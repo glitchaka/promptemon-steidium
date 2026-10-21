@@ -43,7 +43,7 @@ add_executable(rumble_probe
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 add_executable(promptemon_resource_packager
-    tools/promptemon_resource_packager.cpp
+    tools/promptemon_resource_packager_v2.cpp
 )
 target_link_libraries(promptemon_resource_packager PRIVATE promptemon_rom promptemon_bch)
 
