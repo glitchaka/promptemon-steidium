@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -17,11 +18,24 @@ public:
 
     std::vector<std::string> pokemonModels() const;
     std::vector<std::string> modelResources() const;
-    std::vector<std::string> resourcePaths() const;
+
+    std::vector<std::string> resourcePaths() const {
+        std::vector<std::string> result;
+        result.reserve(files_.size() + nestedFiles_.size());
+        for (const auto& [path, record] : files_) {
+            (void)record;
+            result.push_back(path);
+        }
+        for (const auto& [path, record] : nestedFiles_) {
+            (void)record;
+            result.push_back(path);
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
 
     bool has(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extract(const std::string& romfsPath) const;
-    std::vector<std::uint8_t> extractResource(const std::string& romfsPath) const;
     std::vector<std::uint8_t> extractBch(const std::string& romfsPath) const;
 
 private:
