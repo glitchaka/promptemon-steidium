@@ -114,8 +114,11 @@ Image decodeBclim(const std::vector<std::uint8_t>& data) {
     const std::size_t imag = clim + headerSize;
     if (!magicAt(data, imag, "imag")) return {};
 
-    const std::uint32_t imagSize = read32(imag + 0x04);
-    if (imagSize < 0x10 || imag + imagSize > data.size()) return {};
+    // In Nintendo BFLIM/BCLIM, this field is the parse-info size (normally
+    // 0x10), not the physical number of bytes occupied by the whole imag
+    // structure. The structure itself is 0x14 bytes when dataSize is present.
+    const std::uint32_t imagParseSize = read32(imag + 0x04);
+    if (imagParseSize < 0x10 || imag + 0x10 > data.size()) return {};
 
     int width = 0;
     int height = 0;
@@ -123,21 +126,23 @@ Image decodeBclim(const std::vector<std::uint8_t>& data) {
     std::uint32_t declaredImageSize = static_cast<std::uint32_t>(clim);
 
     if (footer.flim) {
-        // 3DS BFLIM imag is 4s I H(height) H(width) H(alignment) B(format) B(swizzle) I(dataSize).
-        if (imagSize < 0x14 || imag + 0x14 > data.size()) return {};
+        // 3DS BFLIM: 4s I H(height) H(width) H(alignment) B(format)
+        // B(swizzle) I(dataSize). parseInfoSize is 0x10 even though this
+        // complete structure occupies 0x14 bytes.
+        if (imag + 0x14 > data.size()) return {};
         height = static_cast<int>(read16(imag + 0x08));
         width = static_cast<int>(read16(imag + 0x0A));
         format = bflimToCtrFormat(static_cast<int>(data[imag + 0x0E]));
         declaredImageSize = read32(imag + 0x10);
     } else {
-        // BCLIM imag stores width then height and uses the CTR texture enum directly.
+        // BCLIM uses the CTR texture enum directly.
         width = static_cast<int>(read16(imag + 0x08));
         height = static_cast<int>(read16(imag + 0x0A));
         format = static_cast<int>(read32(imag + 0x0C) & 0x0F);
-        if (imagSize >= 0x14) declaredImageSize = read32(imag + 0x10);
+        if (imag + 0x14 <= data.size()) declaredImageSize = read32(imag + 0x10);
     }
 
-    if (width <= 0 || height <= 0 || format < 0 || format > 13) return {};
+    if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || format < 0 || format > 13) return {};
 
     std::size_t imageOffset = 0;
     if (declaredImageSize != 0 && declaredImageSize <= clim) imageOffset = clim - declaredImageSize;
