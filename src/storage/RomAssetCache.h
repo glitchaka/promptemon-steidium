@@ -2,8 +2,10 @@
 
 #include "rom/RomModelArchive.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,7 +14,13 @@ namespace promptemon::storage {
 
 class RomAssetCache {
 public:
-    bool prepare(rom::RomModelArchive& archive, const std::filesystem::path& baseDirectory);
+    using ProgressCallback = std::function<void(std::size_t current,
+                                                std::size_t total,
+                                                const std::string& virtualPath)>;
+
+    bool prepare(rom::RomModelArchive& archive,
+                 const std::filesystem::path& baseDirectory,
+                 ProgressCallback progress = {});
     void close();
 
     bool isOpen() const noexcept { return !root_.empty() && !files_.empty(); }
@@ -37,7 +45,8 @@ private:
     bool loadManifest(const std::filesystem::path& directory, const std::string& expectedSignature);
     bool buildManifest(rom::RomModelArchive& archive,
                        const std::filesystem::path& directory,
-                       const std::string& signature);
+                       const std::string& signature,
+                       const ProgressCallback& progress);
 
     std::filesystem::path root_;
     std::string signature_;
