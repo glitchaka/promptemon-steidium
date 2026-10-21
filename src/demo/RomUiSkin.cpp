@@ -1,5 +1,6 @@
 #include "demo/RomUiSkin.h"
 
+#include "bch/BchScene.h"
 #include "ctr/Bclim.h"
 
 #include <windows.h>
@@ -8,9 +9,26 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
+#include <limits>
 #include <utility>
 
 namespace promptemon::demo {
+namespace {
+
+bool isBch(const std::vector<std::uint8_t>& data) {
+    return data.size() >= 4 && data[0] == 'B' && data[1] == 'C' && data[2] == 'H' && data[3] == 0;
+}
+
+ctr::Image imageFromBchTexture(const bch::Texture& texture) {
+    ctr::Image image;
+    image.width = texture.width;
+    image.height = texture.height;
+    image.rgba = texture.rgba;
+    return image;
+}
+
+} // namespace
 
 std::string RomUiSkin::lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -29,7 +47,7 @@ bool RomUiSkin::likelyBclim(const std::string& path) {
     if (hasToken(p, ".bch")) return false;
     return hasToken(p, "button") || hasToken(p, "btn") || hasToken(p, "window") ||
            hasToken(p, "waku") || hasToken(p, "frame") || hasToken(p, "menu") ||
-           hasToken(p, "/ui") || hasToken(p, "common");
+           hasToken(p, "/ui") || hasToken(p, "::ui") || hasToken(p, "common");
 }
 
 bool RomUiSkin::likelyFont(const std::string& path) {
@@ -58,8 +76,10 @@ int RomUiSkin::buttonPathScore(const std::string& path) {
     if (hasToken(p, "menu")) score += 120;
     if (hasToken(p, "common")) score += 80;
     if (hasToken(p, "waku") || hasToken(p, "frame")) score += 50;
+    if (hasToken(p, "/ui") || hasToken(p, "::ui")) score += 180;
     if (hasToken(p, "icon") || hasToken(p, "logo") || hasToken(p, "title") || hasToken(p, "face")) score -= 250;
     if (hasToken(p, "bg") || hasToken(p, "background")) score -= 160;
+    if (hasToken(p, "pii/") || hasToken(p, "mii/") || hasToken(p, "stage") || hasToken(p, "field")) score -= 500;
     return score;
 }
 
@@ -72,8 +92,10 @@ int RomUiSkin::panelPathScore(const std::string& path) {
     if (hasToken(p, "panel")) score += 280;
     if (hasToken(p, "message")) score += 180;
     if (hasToken(p, "common")) score += 100;
+    if (hasToken(p, "/ui") || hasToken(p, "::ui")) score += 180;
     if (hasToken(p, "button") || hasToken(p, "btn")) score += 30;
     if (hasToken(p, "icon") || hasToken(p, "logo") || hasToken(p, "title") || hasToken(p, "face")) score -= 250;
+    if (hasToken(p, "pii/") || hasToken(p, "mii/") || hasToken(p, "stage") || hasToken(p, "field")) score -= 500;
     return score;
 }
 
@@ -99,97 +121,147 @@ bool RomUiSkin::load(storage::RomAssetCache& assets) {
     const auto resources = assets.resources();
     if (resources.empty()) return false;
 
-    std::vector<std::pair<int, std::string>> fonts;
-    fonts.reserve(resources.size());
+    std::ofstream diagnostic(assets.root() / "ui_scan.tsv", std::ios::binary | std::ios::trunc);
+    if (diagnostic) diagnostic << "kind\tstatus\twidth\theight\tresource\n";
+
+    ctr::BitmapFont bestFont;
+    int bestFontScore = std::numeric_limits<int>::min();
+    TextureCandidate bestButton;
+    TextureCandidate bestPanel;
+    int recognizedFonts = 0;
+    int decodedFonts = 0;
+    int recognizedImages = 0;
+    int decodedImages = 0;
+
+    auto considerImage = [&](const std::string& resourcePath, const std::string& textureName, const ctr::Image& image) {
+        if (!image.valid()) return;
+        const std::string scorePath = resourcePath + "/" + textureName;
+        const float aspect = static_cast<float>(image.width) / static_cast<float>(std::max(1, image.height));
+        int buttonScore = buttonPathScore(scorePath);
+        int panelScore = panelPathScore(scorePath);
+
+        if (aspect >= 1.8f && aspect <= 12.0f) buttonScore += 180;
+        else buttonScore -= 120;
+        if (image.width >= 48 && image.width <= 1024) buttonScore += 45;
+        if (image.height >= 12 && image.height <= 180) buttonScore += 70;
+        if (image.height > image.width) buttonScore -= 140;
+
+        if (aspect >= 0.7f && aspect <= 8.0f) panelScore += 80;
+        if (image.width >= 64 && image.height >= 32) panelScore += 70;
+        if (image.width > 2048 || image.height > 2048) panelScore -= 160;
+
+        if (buttonScore > bestButton.buttonScore) {
+            bestButton.path = resourcePath + (textureName.empty() ? "" : "#" + textureName);
+            bestButton.image = image;
+            bestButton.buttonScore = buttonScore;
+            bestButton.panelScore = panelScore;
+        }
+        if (panelScore > bestPanel.panelScore) {
+            bestPanel.path = resourcePath + (textureName.empty() ? "" : "#" + textureName);
+            bestPanel.image = image;
+            bestPanel.buttonScore = buttonScore;
+            bestPanel.panelScore = panelScore;
+        }
+    };
+
+    // First pass: inspect the actual bytes. Filename heuristics affect ranking only;
+    // they never decide whether a resource is inspected.
     for (const auto& path : resources) {
-        if (likelyFont(path)) fonts.push_back({fontPathScore(path), path});
-    }
-    std::sort(fonts.begin(), fonts.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-
-    const std::size_t fontAttempts = std::min<std::size_t>(fonts.size(), 64);
-    for (std::size_t i = 0; i < fontAttempts && !fontReady_; ++i) {
         try {
-            const auto bytes = assets.extractResource(fonts[i].second);
-            if (!ctr::isBcfnt(bytes)) continue;
-            auto decoded = ctr::decodeBcfnt(bytes);
-            if (!decoded.valid()) continue;
+            const auto bytes = assets.extractResource(path);
 
-            std::vector<unsigned int> textures;
-            textures.reserve(decoded.sheets.size());
-            bool ok = true;
-            for (const auto& sheet : decoded.sheets) {
-                const unsigned int texture = upload(sheet);
-                if (!texture) {
-                    ok = false;
-                    break;
+            if (ctr::isBcfnt(bytes)) {
+                ++recognizedFonts;
+                auto decoded = ctr::decodeBcfnt(bytes);
+                if (decoded.valid()) {
+                    ++decodedFonts;
+                    const int score = fontPathScore(path);
+                    if (diagnostic) diagnostic << "BCFNT\tok\t" << decoded.sheetWidth << '\t' << decoded.sheetHeight << '\t' << path << '\n';
+                    if (score > bestFontScore) {
+                        bestFontScore = score;
+                        bestFont = std::move(decoded);
+                        fontResource_ = path;
+                    }
+                } else if (diagnostic) {
+                    diagnostic << "BCFNT\tdecode-failed\t0\t0\t" << path << '\n';
                 }
-                textures.push_back(texture);
-            }
-            if (!ok) {
-                for (unsigned int texture : textures) {
-                    GLuint id = static_cast<GLuint>(texture);
-                    glDeleteTextures(1, &id);
-                }
-                continue;
             }
 
-            font_ = std::move(decoded);
-            fontTextures_ = std::move(textures);
-            fontResource_ = fonts[i].second;
-            fontReady_ = true;
+            if (ctr::isBclim(bytes)) {
+                ++recognizedImages;
+                ctr::Image image = ctr::decodeBclim(bytes);
+                if (image.valid()) {
+                    ++decodedImages;
+                    if (diagnostic) diagnostic << "BCLIM\tok\t" << image.width << '\t' << image.height << '\t' << path << '\n';
+                    considerImage(path, "", image);
+                } else if (diagnostic) {
+                    diagnostic << "BCLIM\tdecode-failed\t0\t0\t" << path << '\n';
+                }
+            }
         } catch (...) {
+            if (diagnostic && (likelyFont(path) || likelyBclim(path))) {
+                diagnostic << "RESOURCE\tread-failed\t0\t0\t" << path << '\n';
+            }
         }
     }
 
-    TextureCandidate bestButton;
-    TextureCandidate bestPanel;
-    std::vector<std::pair<int, std::string>> images;
-    images.reserve(resources.size());
-    for (const auto& path : resources) {
-        if (!likelyBclim(path)) continue;
-        const int broadScore = std::max(buttonPathScore(path), panelPathScore(path));
-        images.push_back({broadScore, path});
+    // Some NW4C UI packages carry the actual raster artwork as BCH textures.
+    // Only inspect BCH files that look UI-related to avoid parsing every Pokemon.
+    if (!bestButton.image.valid() || !bestPanel.image.valid()) {
+        for (const auto& path : resources) {
+            const std::string p = lower(path);
+            const bool uiNamed = hasToken(p, "/ui") || hasToken(p, "::ui") ||
+                                 hasToken(p, "menu") || hasToken(p, "common") ||
+                                 hasToken(p, "button") || hasToken(p, "window") ||
+                                 hasToken(p, "waku") || hasToken(p, "frame");
+            if (!uiNamed) continue;
+            try {
+                const auto bytes = assets.extractResource(path);
+                if (!isBch(bytes)) continue;
+                const auto scene = bch::Scene::parse(bytes);
+                for (const auto& texture : scene.textures()) {
+                    const ctr::Image image = imageFromBchTexture(texture);
+                    if (!image.valid()) continue;
+                    if (diagnostic) diagnostic << "BCH_TEXTURE\tok\t" << image.width << '\t' << image.height << '\t' << path << '#' << texture.name << '\n';
+                    considerImage(path, texture.name, image);
+                }
+            } catch (...) {
+            }
+        }
     }
-    std::sort(images.begin(), images.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    const std::size_t imageAttempts = std::min<std::size_t>(images.size(), 160);
-    for (std::size_t i = 0; i < imageAttempts; ++i) {
-        try {
-            const auto bytes = assets.extractResource(images[i].second);
-            if (!ctr::isBclim(bytes)) continue;
-            ctr::Image image = ctr::decodeBclim(bytes);
-            if (!image.valid()) continue;
-
-            const float aspect = static_cast<float>(image.width) / static_cast<float>(std::max(1, image.height));
-            int buttonScore = buttonPathScore(images[i].second);
-            int panelScore = panelPathScore(images[i].second);
-
-            if (aspect >= 1.8f && aspect <= 12.0f) buttonScore += 180;
-            else buttonScore -= 120;
-            if (image.width >= 48 && image.width <= 1024) buttonScore += 45;
-            if (image.height >= 12 && image.height <= 160) buttonScore += 70;
-
-            if (aspect >= 0.7f && aspect <= 8.0f) panelScore += 80;
-            if (image.width >= 64 && image.height >= 32) panelScore += 70;
-            if (image.width > 1024 || image.height > 1024) panelScore -= 100;
-
-            if (buttonScore > bestButton.buttonScore) {
-                bestButton = {images[i].second, image, buttonScore, panelScore};
+    if (bestFont.valid()) {
+        std::vector<unsigned int> textures;
+        textures.reserve(bestFont.sheets.size());
+        bool ok = true;
+        for (const auto& sheet : bestFont.sheets) {
+            const unsigned int texture = upload(sheet);
+            if (!texture) {
+                ok = false;
+                break;
             }
-            if (panelScore > bestPanel.panelScore) {
-                bestPanel = {images[i].second, std::move(image), buttonScore, panelScore};
+            textures.push_back(texture);
+        }
+        if (ok) {
+            font_ = std::move(bestFont);
+            fontTextures_ = std::move(textures);
+            fontReady_ = true;
+        } else {
+            for (unsigned int texture : textures) {
+                GLuint id = static_cast<GLuint>(texture);
+                if (id) glDeleteTextures(1, &id);
             }
-        } catch (...) {
+            fontResource_.clear();
         }
     }
 
     if (bestButton.image.valid()) {
         buttonTexture_ = upload(bestButton.image);
-        buttonResource_ = bestButton.path;
+        if (buttonTexture_) buttonResource_ = bestButton.path;
     }
     if (bestPanel.image.valid()) {
         panelTexture_ = upload(bestPanel.image);
-        panelResource_ = bestPanel.path;
+        if (panelTexture_) panelResource_ = bestPanel.path;
     }
 
     if (!panelTexture_ && buttonTexture_) {
@@ -199,6 +271,16 @@ bool RomUiSkin::load(storage::RomAssetCache& assets) {
     if (!buttonTexture_ && panelTexture_) {
         buttonTexture_ = panelTexture_;
         buttonResource_ = panelResource_;
+    }
+
+    if (diagnostic) {
+        diagnostic << "SUMMARY\tresources=" << resources.size()
+                   << ";recognized_fonts=" << recognizedFonts
+                   << ";decoded_fonts=" << decodedFonts
+                   << ";recognized_bclim=" << recognizedImages
+                   << ";decoded_bclim=" << decodedImages
+                   << "\t0\t0\t";
+        diagnostic << "font=" << fontResource_ << ";button=" << buttonResource_ << ";panel=" << panelResource_ << '\n';
     }
 
     return ready();
