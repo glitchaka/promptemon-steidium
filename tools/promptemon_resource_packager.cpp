@@ -390,14 +390,12 @@ int main(int argc, char** argv) {
         RankedFile bestPanel;
         for (std::size_t i = 0; i < files.size(); ++i) {
             const auto& file = files[i];
-            if (!looksLikeUiPath(file.lowerPath)) continue;
-            const bool candidate = contains(file.lowerPath, ".bcfnt") || contains(file.lowerPath, ".cfnt") ||
-                                   contains(file.lowerPath, ".bclim") || contains(file.lowerPath, ".clim") ||
-                                   looksLikeBchPath(file.lowerPath);
-            if (!candidate) continue;
+            const bool uiLike = looksLikeUiPath(file.lowerPath);
 
             try {
                 const auto bytes = decodeKnown(readFile(file.absolute));
+
+                // Fonts are detected by their actual BCFNT contents, regardless of filename/path.
                 if (promptemon::ctr::isBcfnt(bytes)) {
                     const auto font = promptemon::ctr::decodeBcfnt(bytes);
                     if (font.valid()) {
@@ -405,6 +403,9 @@ int main(int argc, char** argv) {
                         if (score > bestFont.score) bestFont = {score, i};
                     }
                 }
+
+                // Button/panel candidates still need a UI-like path to avoid choosing arbitrary textures.
+                if (!uiLike) continue;
 
                 if (promptemon::ctr::isBclim(bytes)) {
                     const auto image = promptemon::ctr::decodeBclim(bytes);
