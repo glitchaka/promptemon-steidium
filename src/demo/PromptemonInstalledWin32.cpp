@@ -1,6 +1,57 @@
+#include <windows.h>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+
+namespace {
+
+std::filesystem::path diagnosticBundlePath() {
+    wchar_t buffer[32768]{};
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+    if (!length || length >= std::size(buffer)) return {};
+    return std::filesystem::path(buffer).parent_path() / L"assets" / L"resources-tx";
+}
+
+void dumpUiScanEarly() {
+    const auto bundle = diagnosticBundlePath();
+    const auto scan = bundle / L"ui_scan.tsv";
+    std::cout << "\n[UI] Diagnostico inmediato: " << scan.u8string() << '\n';
+
+    std::ifstream input(scan, std::ios::binary);
+    if (!input) {
+        std::cout << "[UI][ERROR] ui_scan.tsv no existe. La carga fallo antes de completar RomUiSkin::load().\n";
+        return;
+    }
+
+    std::string line;
+    bool foundSummary = false;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::cout << "[UI] " << line << '\n';
+        if (line.rfind("SUMMARY\t", 0) == 0) foundSummary = true;
+    }
+    if (!foundSummary) {
+        std::cout << "[UI][ERROR] ui_scan.tsv existe pero no contiene SUMMARY; la exploracion se interrumpio antes de terminar.\n";
+    }
+    std::cout.flush();
+}
+
+int WINAPI PromptemonDiagnosticMessageBoxW(HWND hwnd, LPCWSTR text, LPCWSTR caption, UINT type) {
+    if (text && wcsstr(text, L"recursos de interfaz") != nullptr) {
+        std::cout << "[RENDER][ERROR] RomUiSkin no quedo listo. Volcando diagnostico antes del cuadro de error...\n";
+        dumpUiScanEarly();
+    }
+    return ::MessageBoxW(hwnd, text, caption, type);
+}
+
+} // namespace
+
+#define MessageBoxW PromptemonDiagnosticMessageBoxW
 #define wWinMain promptemonLegacyWWinMain
 #include "demo/PromptemonGameWin32Cache.cpp"
 #undef wWinMain
+#undef MessageBoxW
 
 #include <filesystem>
 #include <fstream>
