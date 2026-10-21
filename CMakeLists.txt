@@ -44,7 +44,7 @@ target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
     add_executable(promptemon_demo WIN32
-        src/demo/PromptemonGameWin32Cache.cpp
+        src/demo/PromptemonGameBootstrapWin32.cpp
         src/demo/PrototypeRomRendererCache.cpp
         src/demo/RomUiSkin.cpp
         src/demo/ExtractionProgressWindow.cpp
