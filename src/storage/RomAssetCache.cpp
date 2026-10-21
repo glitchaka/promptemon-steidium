@@ -11,7 +11,7 @@
 namespace promptemon::storage {
 namespace {
 
-constexpr const char* kCacheSchema = "promptemon-assets-v3-lz11-progress";
+constexpr const char* kCacheSchema = "promptemon-assets-v4-visible-romfs";
 
 std::string lowerCopy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -51,22 +51,66 @@ std::string leafName(const std::string& virtualPath) {
     return slash == std::string::npos ? inner : inner.substr(slash + 1);
 }
 
-std::string sanitize(std::string value) {
-    for (char& c : value) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (!(std::isalnum(u) || c == '.' || c == '_' || c == '-')) c = '_';
-    }
-    if (value.empty()) value = "resource.bin";
-    if (value.size() > 96) value.resize(96);
-    return value;
-}
-
 bool isAnimationLeaf(const std::string& virtualPath) {
     const std::string p = lowerCopy(virtualPath);
     const std::string leaf = lowerCopy(leafName(p));
     return leaf == "anim.bch" || leaf == "anim.bch.cx" ||
            leaf == "mii_anim.bch" || leaf == "mii_anim.bch.cx" ||
            contains(leaf, "animation");
+}
+
+std::string sanitizeComponent(std::string value) {
+    if (value.empty() || value == "." || value == "..") return "_";
+    for (char& c : value) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (!(std::isalnum(u) || c == '.' || c == '_' || c == '-' || c == ' ')) c = '_';
+    }
+    while (!value.empty() && (value.back() == '.' || value.back() == ' ')) value.pop_back();
+    if (value.empty()) value = "_";
+    return value;
+}
+
+std::string sourceFolder(std::string label) {
+    std::string index = "0";
+    if (!label.empty() && label.front() == '[') {
+        const auto close = label.find(']');
+        if (close != std::string::npos) {
+            index = label.substr(1, close - 1);
+            label = close + 1 < label.size() ? label.substr(close + 1) : std::string{};
+            while (!label.empty() && std::isspace(static_cast<unsigned char>(label.front()))) label.erase(label.begin());
+        }
+    }
+    return "rom_" + sanitizeComponent(index) + "_" + sanitizeComponent(label.empty() ? "source" : label);
+}
+
+std::filesystem::path visibleResourcePath(std::string resource) {
+    std::replace(resource.begin(), resource.end(), '\\', '/');
+
+    // Nested DARC paths use "container::inner/path". Windows cannot represent
+    // ':' in filenames, so expose nested contents next to the container in a
+    // readable "container.contents/" directory.
+    std::string expanded;
+    expanded.reserve(resource.size() + 32);
+    for (std::size_t i = 0; i < resource.size();) {
+        if (i + 1 < resource.size() && resource[i] == ':' && resource[i + 1] == ':') {
+            expanded += ".contents/";
+            i += 2;
+        } else {
+            expanded.push_back(resource[i++]);
+        }
+    }
+
+    std::filesystem::path out;
+    std::size_t start = 0;
+    while (start <= expanded.size()) {
+        const auto slash = expanded.find('/', start);
+        const std::string part = expanded.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+        if (!part.empty()) out /= std::filesystem::u8path(sanitizeComponent(part));
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+    if (out.empty()) out = L"resource.bin";
+    return out;
 }
 
 } // namespace
@@ -102,23 +146,14 @@ bool RomAssetCache::isModelResource(const std::string& virtualPath) {
     return !isAnimationLeaf(virtualPath);
 }
 
-std::string RomAssetCache::cacheFileName(const std::string& virtualPath) {
-    return hex64(fnv1a64(virtualPath)) + "_" + sanitize(leafName(virtualPath));
-}
-
-std::string RomAssetCache::categoryFor(const std::string& virtualPath) {
-    const std::string p = lowerCopy(virtualPath);
-    if (endsWith(p, ".bcfnt") || endsWith(p, ".bcfnt.cx") ||
-        endsWith(p, ".cfnt") || endsWith(p, ".cfnt.cx") || contains(p, "font")) return "fonts";
-    if (endsWith(p, ".bclim") || endsWith(p, ".bclim.cx") ||
-        endsWith(p, ".clim") || endsWith(p, ".clim.cx") ||
-        endsWith(p, ".bclyt") || endsWith(p, ".bclyt.cx") ||
-        endsWith(p, ".bclan") || endsWith(p, ".bclan.cx") ||
-        endsWith(p, ".bcflan") || endsWith(p, ".bcflan.cx") ||
-        contains(p, "/ui/") || contains(p, "::ui/")) return "ui";
-    if (contains(p, "effect") || contains(p, "/eff") || contains(p, "::eff")) return "effects";
-    if (endsWith(p, ".bch") || endsWith(p, ".bch.cx")) return "bch";
-    return "misc";
+std::filesystem::path RomAssetCache::relativePathFor(const std::string& virtualPath) {
+    const std::string separator = " :: ";
+    const auto split = virtualPath.find(separator);
+    const std::string label = split == std::string::npos ? "[0] source" : virtualPath.substr(0, split);
+    const std::string resource = split == std::string::npos ? virtualPath : virtualPath.substr(split + separator.size());
+    return std::filesystem::path(L"romfs") /
+           std::filesystem::u8path(sourceFolder(label)) /
+           visibleResourcePath(resource);
 }
 
 bool RomAssetCache::loadManifest(const std::filesystem::path& directory,
@@ -163,6 +198,7 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
     const auto all = archive.resources();
     std::unordered_map<std::string, std::filesystem::path> built;
     built.reserve(all.size());
+    std::unordered_map<std::string, std::string> occupied;
 
     for (std::size_t index = 0; index < all.size(); ++index) {
         const auto& virtualPath = all[index];
@@ -172,8 +208,17 @@ bool RomAssetCache::buildManifest(rom::RomModelArchive& archive,
             const auto bytes = archive.extractResource(virtualPath);
             if (bytes.empty()) continue;
 
-            const std::filesystem::path category = std::filesystem::u8path(categoryFor(virtualPath));
-            const std::filesystem::path relative = category / std::filesystem::u8path(cacheFileName(virtualPath));
+            std::filesystem::path relative = relativePathFor(virtualPath);
+            std::string relativeKey = relative.generic_u8string();
+            if (const auto existing = occupied.find(relativeKey);
+                existing != occupied.end() && existing->second != virtualPath) {
+                const std::string suffix = "__" + hex64(fnv1a64(virtualPath)).substr(0, 8);
+                relative = relative.parent_path() /
+                           std::filesystem::u8path(relative.stem().u8string() + suffix + relative.extension().u8string());
+                relativeKey = relative.generic_u8string();
+            }
+            occupied[relativeKey] = virtualPath;
+
             const std::filesystem::path full = directory / relative;
             std::filesystem::create_directories(full.parent_path(), ec);
             if (ec) {
