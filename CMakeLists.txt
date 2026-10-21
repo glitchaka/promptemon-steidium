@@ -20,6 +20,9 @@ target_include_directories(promptemon_rom PUBLIC
 
 add_library(promptemon_bch
     src/bch/BchScene.cpp
+    src/ctr/CtrTexture.cpp
+    src/ctr/Bclim.cpp
+    src/ctr/Bcfnt.cpp
 )
 
 target_include_directories(promptemon_bch PUBLIC
