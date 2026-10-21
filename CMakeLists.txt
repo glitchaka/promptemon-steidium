@@ -47,6 +47,7 @@ if(WIN32)
         src/demo/PromptemonGameWin32Cache.cpp
         src/demo/PrototypeRomRendererCache.cpp
         src/demo/RomUiSkin.cpp
+        src/demo/ExtractionProgressWindow.cpp
         src/storage/LocalDatabase.cpp
         src/storage/RomAssetCache.cpp
     )
