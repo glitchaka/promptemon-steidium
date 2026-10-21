@@ -14,7 +14,11 @@ public:
     bool load(storage::RomAssetCache& assets);
     void release();
 
-    bool ready() const noexcept { return fontReady_ && buttonTexture_ != 0 && panelTexture_ != 0; }
+    // The ROM skin is optional at runtime. Missing/undecodable UI assets must not
+    // abort the whole prototype; callers can keep running in degraded mode while
+    // ui_scan.tsv and the startup monitor report the exact missing pieces.
+    bool ready() const noexcept { return true; }
+    bool nativeSkinReady() const noexcept { return fontReady_ && buttonTexture_ != 0 && panelTexture_ != 0; }
     const std::string& fontResource() const noexcept { return fontResource_; }
     const std::string& buttonResource() const noexcept { return buttonResource_; }
     const std::string& panelResource() const noexcept { return panelResource_; }
