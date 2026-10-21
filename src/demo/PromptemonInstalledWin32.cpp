@@ -209,9 +209,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     std::cout << "[RENDER] OK - ventana inicializada.\n";
-    if (!gRenderer.create) {
-        // unreachable; keeps diagnostics focused on the real renderer path.
-    }
     std::cout << "[JUEGO] Promptemon Steidium listo.\n\n";
 
     MSG message{};
