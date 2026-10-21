@@ -65,6 +65,9 @@ if(WIN32)
         src/storage/RomAssetCache.cpp
         src/storage/RomAssetCacheInstalled.cpp
     )
+    if(DEFINED PROMPTEMON_OUTPUT_BASENAME AND NOT PROMPTEMON_OUTPUT_BASENAME STREQUAL "")
+        set_target_properties(promptemon_demo PROPERTIES OUTPUT_NAME "${PROMPTEMON_OUTPUT_BASENAME}")
+    endif()
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(promptemon_demo PRIVATE /utf-8)
