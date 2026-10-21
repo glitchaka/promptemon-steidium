@@ -61,6 +61,7 @@ if(WIN32)
         src/demo/PromptemonInstalledWin32.cpp
         src/demo/PrototypeRomRendererCache.cpp
         src/demo/RomUiSkin.cpp
+        src/demo/DebugConsoleOverlay.cpp
         src/storage/LocalDatabase.cpp
         src/storage/RomAssetCache.cpp
         src/storage/RomAssetCacheInstalled.cpp
