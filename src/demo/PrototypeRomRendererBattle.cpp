@@ -31,6 +31,16 @@ bool endsWith(const std::string& value, const std::string& suffix) {
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+bool sceneryOnlyMesh(const std::string& name) {
+    const std::string n = lowerAscii(name);
+    return n.find("sky") != std::string::npos ||
+           n.find("cloud") != std::string::npos ||
+           n.find("bg") != std::string::npos ||
+           n.find("back") != std::string::npos ||
+           n.find("far") != std::string::npos ||
+           n.find("horizon") != std::string::npos;
+}
+
 bch::Vec2 materialUv(const bch::Material* material, bch::Vec2 uv) {
     if (!material) return uv;
     const float c = std::cos(material->uvRotation);
@@ -64,7 +74,7 @@ void drawSceneMeshes(bch::Scene& scene,
             glColor4f(1, 1, 1, 1);
         } else {
             glDisable(GL_TEXTURE_2D);
-            glColor4f(0.82f, 0.84f, 0.82f, 1.0f);
+            glColor4f(.82f, .84f, .82f, 1.0f);
         }
 
         glBegin(GL_TRIANGLES);
@@ -106,8 +116,7 @@ std::string resolveCanonicalModel(storage::RomAssetCache* archive,
         if (p.find("pii/") != std::string::npos && endsWith(p, suffix)) return resource;
     }
     for (const auto& resource : archive->modelResources()) {
-        const std::string p = lowerAscii(resource);
-        if (endsWith(p, suffix)) return resource;
+        if (endsWith(lowerAscii(resource), suffix)) return resource;
     }
     return requested;
 }
@@ -122,18 +131,8 @@ std::string findBattleGround(storage::RomAssetCache* archive, const std::string&
     };
     for (const auto& needle : preferred) {
         for (const auto& resource : archive->modelResources()) {
-            const std::string p = lowerAscii(resource);
-            if (endsWith(p, needle)) return resource;
+            if (endsWith(lowerAscii(resource), needle)) return resource;
         }
-    }
-    const auto slash = requested.find_last_of('/');
-    const std::string prefix = slash == std::string::npos ? std::string{} : lowerAscii(requested.substr(0, slash + 1));
-    for (const auto& resource : archive->modelResources()) {
-        const std::string p = lowerAscii(resource);
-        if (!prefix.empty() && p.rfind(prefix, 0) != 0) continue;
-        const auto namePos = p.find_last_of('/');
-        const std::string name = namePos == std::string::npos ? p : p.substr(namePos + 1);
-        if (name.rfind("ground_", 0) == 0 && endsWith(name, ".bch")) return resource;
     }
     return requested;
 }
@@ -302,21 +301,40 @@ void PrototypeRomRenderer::uploadTextures(Visual& target) {
 
 void PrototypeRomRenderer::updateBounds(Visual& target) {
     if (!target.scene) return;
-    bch::Vec3 mn{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-    bch::Vec3 mx{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
-    bool found = false;
+
+    bch::Vec3 fullMin{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    bch::Vec3 fullMax{-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
+    bch::Vec3 playMin = fullMin;
+    bch::Vec3 playMax = fullMax;
+    bool fullFound = false;
+    bool playFound = false;
+    const bool isLevel = (&target == &stage_);
     const auto pose = target.scene->samplePose(nullptr, 0.0f);
+
     for (const auto& mesh : target.scene->meshes()) {
+        const bool gameplayMesh = !isLevel || !sceneryOnlyMesh(mesh.name);
         for (const auto& vertex : mesh.vertices) {
             const auto p = target.scene->skin(vertex, pose);
-            mn.x = std::min(mn.x, p.x); mn.y = std::min(mn.y, p.y); mn.z = std::min(mn.z, p.z);
-            mx.x = std::max(mx.x, p.x); mx.y = std::max(mx.y, p.y); mx.z = std::max(mx.z, p.z);
-            found = true;
+            fullMin.x = std::min(fullMin.x, p.x); fullMin.y = std::min(fullMin.y, p.y); fullMin.z = std::min(fullMin.z, p.z);
+            fullMax.x = std::max(fullMax.x, p.x); fullMax.y = std::max(fullMax.y, p.y); fullMax.z = std::max(fullMax.z, p.z);
+            fullFound = true;
+            if (gameplayMesh) {
+                playMin.x = std::min(playMin.x, p.x); playMin.y = std::min(playMin.y, p.y); playMin.z = std::min(playMin.z, p.z);
+                playMax.x = std::max(playMax.x, p.x); playMax.y = std::max(playMax.y, p.y); playMax.z = std::max(playMax.z, p.z);
+                playFound = true;
+            }
         }
     }
-    if (!found) return;
-    target.center = {(mn.x + mx.x) * .5f, (mn.y + mx.y) * .5f, (mn.z + mx.z) * .5f};
-    const float extent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z});
+    if (!fullFound) return;
+    if (!playFound) { playMin = fullMin; playMax = fullMax; }
+
+    target.boundsMin = playMin;
+    target.boundsMax = playMax;
+    target.center = {(playMin.x + playMax.x) * .5f,
+                     (playMin.y + playMax.y) * .5f,
+                     (playMin.z + playMax.z) * .5f};
+
+    const float extent = std::max({playMax.x - playMin.x, playMax.y - playMin.y, playMax.z - playMin.z});
     if (extent > 1e-5f) target.fitScale = 1.75f / extent;
 }
 
@@ -410,8 +428,10 @@ bool PrototypeRomRenderer::showBattle(const std::string& pm, const std::string& 
     const bool a = ensureVisual(player_, resolveCanonicalModel(archive_, pm, pn), true);
     const bool b = ensureVisual(wild_, resolveCanonicalModel(archive_, wm, wn), true);
     if (entering) {
-        playerFieldX_ = -2.8f; playerFieldZ_ = -6.2f;
-        wildFieldX_ = 2.4f; wildFieldZ_ = -9.1f;
+        playerFieldX_ = -2.6f;
+        playerFieldZ_ = 1.5f;
+        wildFieldX_ = 2.1f;
+        wildFieldZ_ = -1.8f;
         playerYaw_ = 35.0f;
         attack1Latch_ = attack2Latch_ = false;
         if (window_) SetFocus(window_);
@@ -440,9 +460,9 @@ void PrototypeRomRenderer::setupPerspective(int width, int height) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     const double aspect = static_cast<double>(std::max(1, width)) / std::max(1, height);
-    const double top = .42;
+    const double top = .44;
     const double right = top * aspect;
-    glFrustum(-right, right, -top, top, .8, 140.0);
+    glFrustum(-right, right, -top, top, .8, 180.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 }
@@ -459,24 +479,24 @@ void PrototypeRomRenderer::setupOverlay(int width, int height) {
 bool PrototypeRomRenderer::playerInAttackRange() const {
     const float dx = wildFieldX_ - playerFieldX_;
     const float dz = wildFieldZ_ - playerFieldZ_;
-    return dx * dx + dz * dz <= 8.0f;
+    return dx * dx + dz * dz <= 5.0f;
 }
 
 void PrototypeRomRenderer::updateBattleInput(float dt) {
     if (page_ != GamePage::Battle || battleOver_) return;
 
     float dx = 0.0f, dz = 0.0f;
-    if (GetAsyncKeyState('A') & 0x8000 || GetAsyncKeyState(VK_LEFT) & 0x8000) dx -= 1.0f;
-    if (GetAsyncKeyState('D') & 0x8000 || GetAsyncKeyState(VK_RIGHT) & 0x8000) dx += 1.0f;
-    if (GetAsyncKeyState('W') & 0x8000 || GetAsyncKeyState(VK_UP) & 0x8000) dz -= 1.0f;
-    if (GetAsyncKeyState('S') & 0x8000 || GetAsyncKeyState(VK_DOWN) & 0x8000) dz += 1.0f;
+    if ((GetAsyncKeyState('A') & 0x8000) || (GetAsyncKeyState(VK_LEFT) & 0x8000)) dx -= 1.0f;
+    if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) dx += 1.0f;
+    if ((GetAsyncKeyState('W') & 0x8000) || (GetAsyncKeyState(VK_UP) & 0x8000)) dz -= 1.0f;
+    if ((GetAsyncKeyState('S') & 0x8000) || (GetAsyncKeyState(VK_DOWN) & 0x8000)) dz += 1.0f;
 
     const float len = std::sqrt(dx * dx + dz * dz);
     if (len > .01f) {
         dx /= len; dz /= len;
-        const float speed = 3.0f;
-        playerFieldX_ = std::clamp(playerFieldX_ + dx * speed * dt, -5.0f, 5.0f);
-        playerFieldZ_ = std::clamp(playerFieldZ_ + dz * speed * dt, -11.0f, -4.5f);
+        const float speed = 3.3f;
+        playerFieldX_ = std::clamp(playerFieldX_ + dx * speed * dt, -5.2f, 5.2f);
+        playerFieldZ_ = std::clamp(playerFieldZ_ + dz * speed * dt, -5.0f, 5.0f);
         playerYaw_ = std::atan2(dx, -dz) * 180.0f / kPi;
         if (player_.current == player_.idle) {
             if (const auto* walk = chooseAnimation(player_, {"walk", "run", "move", "aruki"}, false)) {
@@ -515,7 +535,20 @@ void PrototypeRomRenderer::drawVisual(Visual& visual, float x, float y, float z,
 
 void PrototypeRomRenderer::drawStage() {
     if (!stage_.scene) return;
-    drawVisual(stage_, 0.0f, -0.25f, -11.4f, 10.5f, 0.0f);
+
+    const float spanX = std::max(.001f, stage_.boundsMax.x - stage_.boundsMin.x);
+    const float spanZ = std::max(.001f, stage_.boundsMax.z - stage_.boundsMin.z);
+    const float horizontal = std::max(spanX, spanZ);
+    const float worldScale = 12.0f / horizontal;
+    const float centerX = (stage_.boundsMin.x + stage_.boundsMax.x) * .5f;
+    const float centerZ = (stage_.boundsMin.z + stage_.boundsMax.z) * .5f;
+    const float floorY = stage_.boundsMin.y;
+
+    glPushMatrix();
+    glScalef(worldScale, worldScale, worldScale);
+    glTranslatef(-centerX, -floorY, -centerZ);
+    drawSceneMeshes(*stage_.scene, stage_.textures, nullptr, 0.0f);
+    glPopMatrix();
 }
 
 void PrototypeRomRenderer::drawShadow(float x, float y, float z, float rx, float rz, float alpha) {
@@ -553,8 +586,8 @@ void PrototypeRomRenderer::drawAttackEffect() {
     const float phase = 1.0f - effectTimer_ / 1.05f;
     const float x = effectTargetsWild_ ? wildFieldX_ : playerFieldX_;
     const float z = effectTargetsWild_ ? wildFieldZ_ : playerFieldZ_;
-    if (effect_.scene) drawVisual(effect_, x, .75f, z, .5f, 0);
-    else drawFallbackEffect(x, .80f, z, phase);
+    if (effect_.scene) drawVisual(effect_, x, .50f, z, .42f, 0);
+    else drawFallbackEffect(x, .55f, z, phase);
 }
 
 void PrototypeRomRenderer::renderWorld(int width, int height) {
@@ -564,32 +597,48 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // Menus are not rendered as a camera sitting outside the level.
+    if (page_ == GamePage::MainMenu || page_ == GamePage::Intro || page_ == GamePage::Options)
+        return;
+
     glPushMatrix();
-    const float followX = page_ == GamePage::Battle ? -playerFieldX_ * .16f : 0.0f;
-    const float followZ = page_ == GamePage::Battle ? -(playerFieldZ_ + 7.5f) * .10f : 0.0f;
-    glTranslatef(followX, -2.35f, followZ);
-    glRotatef(27.0f, 1.0f, 0.0f, 0.0f);
+
+    if (page_ == GamePage::StarterSelect) {
+        glTranslatef(0.0f, -1.15f, -7.4f);
+        drawShadow(-2.0f, 0.0f, 0.0f, .42f, .24f, .30f);
+        drawShadow(0.0f, 0.0f, 0.0f, .42f, .24f, .30f);
+        drawShadow(2.0f, 0.0f, 0.0f, .42f, .24f, .30f);
+        drawVisual(player_, -2.0f, .36f, 0.0f, .50f, 8);
+        drawVisual(wild_, 0.0f, .36f, 0.0f, .50f, 0);
+        drawVisual(third_, 2.0f, .36f, 0.0f, .50f, -8);
+        glPopMatrix();
+        return;
+    }
+
+    // Camera is now looking INTO the normalized level. The stage and every actor use
+    // the same coordinate space. Moving the player therefore moves through the map,
+    // not across a separate foreground layer.
+    const float followX = page_ == GamePage::Battle ? playerFieldX_ * .38f : 0.0f;
+    const float followZ = page_ == GamePage::Battle ? playerFieldZ_ * .28f : 0.0f;
+    glTranslatef(0.0f, -2.25f, -10.8f);
+    glRotatef(31.0f, 1.0f, 0.0f, 0.0f);
+    glTranslatef(-followX, 0.0f, -followZ);
+
     drawStage();
 
     switch (page_) {
-        case GamePage::StarterSelect:
-            drawShadow(-2.2f, .40f, -7.3f, .42f, .24f, .32f);
-            drawShadow(0.0f, .40f, -7.7f, .42f, .24f, .32f);
-            drawShadow(2.2f, .40f, -7.3f, .42f, .24f, .32f);
-            drawVisual(player_, -2.2f, .72f, -7.3f, .52f, 8);
-            drawVisual(wild_, 0.0f, .72f, -7.7f, .52f, 0);
-            drawVisual(third_, 2.2f, .72f, -7.3f, .52f, -8);
-            break;
         case GamePage::Hub:
-            drawShadow(0.0f, .40f, -7.2f, .42f, .24f, .32f);
-            drawVisual(player_, 0.0f, .72f, -7.2f, .55f, 0);
+            drawShadow(0.0f, .03f, 1.4f, .36f, .22f, .30f);
+            drawVisual(player_, 0.0f, .38f, 1.4f, .44f, 180.0f);
             break;
+
         case GamePage::Hunt:
-            drawShadow(-1.4f, .40f, -6.7f, .40f, .23f, .30f);
-            drawShadow(1.3f, .40f, -8.2f, .40f, .23f, .30f);
-            drawVisual(player_, -1.4f, .72f, -6.7f, .50f, 30);
-            drawVisual(wild_, 1.3f, .72f, -8.2f, .50f, -30);
+            drawShadow(-1.8f, .03f, 1.7f, .36f, .22f, .30f);
+            drawShadow(1.6f, .03f, -1.2f, .36f, .22f, .30f);
+            drawVisual(player_, -1.8f, .38f, 1.7f, .44f, 35.0f);
+            drawVisual(wild_, 1.6f, .38f, -1.2f, .44f, -35.0f);
             break;
+
         case GamePage::Battle: {
             float px = playerFieldX_, pz = playerFieldZ_;
             float wx = wildFieldX_, wz = wildFieldZ_;
@@ -599,19 +648,21 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
                 float dx = wx - px, dz = wz - pz;
                 const float dist = std::max(.001f, std::sqrt(dx * dx + dz * dz));
                 dx /= dist; dz /= dist;
-                if (effectTargetsWild_) { px += dx * pulse * .70f; pz += dz * pulse * .70f; wx += dx * pulse * .10f; wz += dz * pulse * .10f; }
-                else { wx -= dx * pulse * .70f; wz -= dz * pulse * .70f; px -= dx * pulse * .10f; pz -= dz * pulse * .10f; }
+                if (effectTargetsWild_) { px += dx * pulse * .60f; pz += dz * pulse * .60f; }
+                else { wx -= dx * pulse * .60f; wz -= dz * pulse * .60f; }
             }
             const float enemyYaw = std::atan2(px - wx, -(pz - wz)) * 180.0f / kPi;
-            drawShadow(px, .40f, pz, .40f, .23f, .33f);
-            drawShadow(wx, .40f, wz, .40f, .23f, .33f);
-            drawVisual(player_, px, .72f, pz, .48f, playerYaw_);
-            drawVisual(wild_, wx, .72f, wz, .48f, enemyYaw);
+            drawShadow(px, .03f, pz, .36f, .22f, .32f);
+            drawShadow(wx, .03f, wz, .36f, .22f, .32f);
+            drawVisual(player_, px, .38f, pz, .43f, playerYaw_);
+            drawVisual(wild_, wx, .38f, wz, .43f, enemyYaw);
             drawAttackEffect();
             break;
         }
-        default: break;
+        default:
+            break;
     }
+
     glPopMatrix();
 }
 
@@ -801,7 +852,11 @@ LRESULT CALLBACK PrototypeRomRenderer::WindowProc(HWND hwnd, UINT msg, WPARAM wp
     }
     switch (msg) {
         case WM_PAINT: {
-            PAINTSTRUCT p{}; BeginPaint(hwnd, &p); if (self) self->render(); EndPaint(hwnd, &p); return 0;
+            PAINTSTRUCT p{};
+            BeginPaint(hwnd, &p);
+            if (self) self->render();
+            EndPaint(hwnd, &p);
+            return 0;
         }
         case WM_ERASEBKGND: return 1;
         case WM_SIZE: if (self) self->render(); return 0;
