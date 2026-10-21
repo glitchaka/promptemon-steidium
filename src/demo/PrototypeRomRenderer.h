@@ -1,12 +1,12 @@
 #pragma once
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #include "bch/BchScene.h"
 #include "rom/RomModelArchive.h"
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
