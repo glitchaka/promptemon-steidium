@@ -59,7 +59,7 @@ endif()
 if(WIN32)
     add_executable(promptemon_demo WIN32
         src/demo/PromptemonInstalledCleanWin32.cpp
-        src/demo/PrototypeRomRendererReference.cpp
+        src/demo/PrototypeRomRendererVideo.cpp
         src/demo/RomUiSkinReference.cpp
         src/storage/LocalDatabase.cpp
         src/storage/RomAssetCache.cpp
