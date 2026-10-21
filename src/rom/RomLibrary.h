@@ -17,7 +17,8 @@ struct RomLibraryEntry {
 
 class RomLibrary {
 public:
-    static RomLibrary scan(const std::filesystem::path& directory);
+    static RomLibrary scan(const std::filesystem::path& input);
+    static RomLibrary scan(const std::vector<std::filesystem::path>& inputs);
 
     const std::vector<RomLibraryEntry>& entries() const noexcept { return entries_; }
     bool empty() const noexcept { return entries_.empty(); }
