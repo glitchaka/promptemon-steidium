@@ -147,6 +147,8 @@ private:
                        const std::vector<std::string>& preferredTokens,
                        bool preferNonLoop);
 
+    void initializeFonts();
+    void releaseFonts();
     void render();
     void renderWorld(int width, int height);
     void renderOverlay(int width, int height);
@@ -179,7 +181,7 @@ private:
     HWND parent_ = nullptr;
     HDC dc_ = nullptr;
     HGLRC gl_ = nullptr;
-    storage::RomAssetCache* assets_ = nullptr;
+    storage::RomAssetCache* archive_ = nullptr;
     RomUiSkin uiSkin_;
 
     Visual stage_;
@@ -215,6 +217,14 @@ private:
     bool shiny_ = false;
     bool battleOver_ = false;
     bool battleWon_ = false;
+
+    // Kept only for ABI-neutral cleanup of the previous renderer implementation.
+    unsigned int fontSmall_ = 0;
+    unsigned int fontMedium_ = 0;
+    unsigned int fontLarge_ = 0;
+    HFONT hFontSmall_ = nullptr;
+    HFONT hFontMedium_ = nullptr;
+    HFONT hFontLarge_ = nullptr;
 
     float elapsedSeconds_ = 0.0f;
     float effectTimer_ = 0.0f;
