@@ -1,6 +1,8 @@
 name: Build Windows demo
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -24,8 +26,7 @@ jobs:
           @"
           PROMPTEMON STEIDIUM - playable prototype
 
-          Put your own Pokemon Rumble World ROM inside a 'roms' folder next to the executable.
-          The playable prototype now reads and renders the ROM models directly in Hub, Hunt and Battle.
+          Install the locally-generated Rumble World resource bundle beside the executable in assets/resources-tx.
 
           Current flow:
           Nueva partida -> Introduccion -> starter -> Hub -> Caza -> Combate.
