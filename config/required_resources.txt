@@ -1,0 +1,53 @@
+# Promptemon Steidium - recursos usados por el slice jugable actual.
+# Las reglas son OR y no distinguen mayusculas/minusculas.
+# Formatos: prefix=, contains=, suffix=, basename=
+#
+# No se incluye la ROM ni el dump completo. Al agregar una especie, escenario
+# o familia de UI nueva, se agrega aqui su ruta/token.
+
+# Pokemon actualmente definidos en kSpecies.
+contains=/pii/koratta
+contains=/pii/poppo
+contains=/pii/kyatapi
+contains=/pii/biidoru
+contains=/pii/zubatto
+contains=/pii/ishitsubute
+contains=/pii/isitubute
+contains=/pii/geodude
+contains=/pii/goosu
+contains=/pii/gosu
+contains=/pii/ghos
+contains=/pii/gastly
+contains=/pii/wanrikii
+contains=/pii/machop
+
+# Animacion compartida cuando exista fuera del nombre del Pokemon.
+basename=anim.bch
+basename=anim.bch.cx
+basename=animation.bch
+basename=animation.bch.cx
+basename=mii_anim.bch
+basename=mii_anim.bch.cx
+
+# Hub: candidatos que el runtime prioriza actualmente.
+contains=/stage/town1/ground_96.bch
+contains=/stage/town1/rep_01.bch
+contains=/event/makuai/3d.bch
+contains=op_toykingdom_01.bch
+contains=kingscourt_01.bch
+contains=makuai_idou.bch
+
+# UI y fuentes. RomUiSkin inspecciona los bytes y elige el mejor candidato.
+contains=/ui/
+contains=/menu/
+contains=/font/
+contains=.bcfnt
+contains=.cfnt
+contains=.bclim
+contains=.clim
+
+# Efectos que el renderer puntua para golpes/acciones.
+contains=/effect/
+contains=/effects/
+contains=/eff/
+contains=eff_
