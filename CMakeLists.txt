@@ -64,6 +64,7 @@ if(WIN32)
         shell32
         ole32
         comctl32
+        comdlg32
     )
 
     add_executable(promptemon_viewer WIN32
