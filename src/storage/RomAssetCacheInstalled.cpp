@@ -13,12 +13,24 @@
 namespace promptemon::storage {
 namespace {
 
-std::uint32_t u32(const std::vector<std::uint8_t>& data, std::size_t offset) {
+std::uint32_t u32le(const std::vector<std::uint8_t>& data, std::size_t offset) {
     if (offset + 4 > data.size()) return 0;
     return static_cast<std::uint32_t>(data[offset]) |
            (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
            (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
            (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+}
+
+std::uint32_t u32be(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    if (offset + 4 > data.size()) return 0;
+    return (static_cast<std::uint32_t>(data[offset]) << 24) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 8) |
+           static_cast<std::uint32_t>(data[offset + 3]);
+}
+
+std::uint32_t u32(const std::vector<std::uint8_t>& data, std::size_t offset, bool bigEndian) {
+    return bigEndian ? u32be(data, offset) : u32le(data, offset);
 }
 
 bool magicAt(const std::vector<std::uint8_t>& data, std::size_t offset, const char* magic) {
@@ -28,11 +40,23 @@ bool magicAt(const std::vector<std::uint8_t>& data, std::size_t offset, const ch
     return true;
 }
 
-std::string utf16ZAscii(const std::vector<std::uint8_t>& data, std::size_t offset, std::size_t limit) {
+std::size_t findMagic(const std::vector<std::uint8_t>& data, const char* magic, std::size_t limit) {
+    const std::size_t maxOffset = std::min(limit, data.size());
+    for (std::size_t i = 0; i + 4 <= maxOffset; ++i) {
+        if (magicAt(data, i, magic)) return i;
+    }
+    return static_cast<std::size_t>(-1);
+}
+
+std::string utf16ZAscii(const std::vector<std::uint8_t>& data,
+                        std::size_t offset,
+                        std::size_t limit,
+                        bool bigEndian) {
     std::string out;
     while (offset + 1 < data.size() && offset + 1 < limit) {
-        const std::uint16_t ch = static_cast<std::uint16_t>(data[offset]) |
-                                 static_cast<std::uint16_t>(data[offset + 1] << 8);
+        const std::uint16_t ch = bigEndian
+            ? static_cast<std::uint16_t>((data[offset] << 8) | data[offset + 1])
+            : static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
         offset += 2;
         if (ch == 0) break;
         out.push_back(ch <= 0x7Fu ? static_cast<char>(ch) : '?');
@@ -80,14 +104,25 @@ void indexDarc(const std::filesystem::path& directory,
                const std::string& outerVirtual,
                std::unordered_map<std::string, std::filesystem::path>& loaded) {
     auto data = decodeKnown(readBytes(source));
-    if (data.size() < 0x1C || !magicAt(data, 0, "darc")) return;
-    if (!(data[4] == 0xFF && data[5] == 0xFE)) return;
+    if (data.size() < 0x1C) return;
 
-    const std::uint32_t tableOffset = u32(data, 0x10);
-    const std::uint32_t tableSize = u32(data, 0x14);
+    if (!magicAt(data, 0, "darc")) {
+        const std::size_t embedded = findMagic(data, "darc", 0x2000);
+        if (embedded == static_cast<std::size_t>(-1)) return;
+        data = std::vector<std::uint8_t>(data.begin() + static_cast<std::ptrdiff_t>(embedded), data.end());
+        if (data.size() < 0x1C) return;
+    }
+
+    bool bigEndian = false;
+    if (data[4] == 0xFF && data[5] == 0xFE) bigEndian = false;
+    else if (data[4] == 0xFE && data[5] == 0xFF) bigEndian = true;
+    else return;
+
+    const std::uint32_t tableOffset = u32(data, 0x10, bigEndian);
+    const std::uint32_t tableSize = u32(data, 0x14, bigEndian);
     if (tableOffset > data.size() || tableSize > data.size() - tableOffset || tableSize < 12) return;
 
-    const std::uint32_t rootLength = u32(data, tableOffset + 8);
+    const std::uint32_t rootLength = u32(data, tableOffset + 8, bigEndian);
     if (rootLength == 0 || rootLength > 0x100000u) return;
     const std::uint64_t entriesBytes = static_cast<std::uint64_t>(rootLength) * 12u;
     if (entriesBytes > tableSize) return;
@@ -111,18 +146,18 @@ void indexDarc(const std::filesystem::path& directory,
         const std::size_t entryOffset = static_cast<std::size_t>(tableOffset) + static_cast<std::size_t>(i) * 12u;
         if (entryOffset + 12 > data.size()) break;
 
-        const std::uint32_t flagsAndName = u32(data, entryOffset);
+        const std::uint32_t flagsAndName = u32(data, entryOffset, bigEndian);
         const bool isDirectory = (flagsAndName & 0x01000000u) != 0;
         const std::uint32_t nameOffset = flagsAndName & 0x00FFFFFFu;
         const std::size_t namePos = namesOffset + nameOffset;
         if (namePos >= namesLimit) continue;
 
-        const std::string name = utf16ZAscii(data, namePos, namesLimit);
+        const std::string name = utf16ZAscii(data, namePos, namesLimit, bigEndian);
         const std::string parent = directories.empty() ? std::string{} : directories.back().path;
         const std::string fullPath = parent.empty() ? name : parent + "/" + name;
 
-        const std::uint32_t dataOffset = u32(data, entryOffset + 4);
-        const std::uint32_t length = u32(data, entryOffset + 8);
+        const std::uint32_t dataOffset = u32(data, entryOffset + 4, bigEndian);
+        const std::uint32_t length = u32(data, entryOffset + 8, bigEndian);
 
         if (isDirectory) {
             directories.push_back({(!name.empty() && name != ".") ? fullPath : parent, length});
@@ -157,6 +192,7 @@ void indexDarc(const std::filesystem::path& directory,
             ec.clear();
             continue;
         }
+
         const std::string nestedVirtual = outerVirtual + "::" + fullPath;
         loaded[nestedVirtual] = relative;
 
