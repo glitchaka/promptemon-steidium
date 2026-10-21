@@ -7,6 +7,7 @@
 #include <GL/gl.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -26,6 +27,81 @@ ctr::Image imageFromBchTexture(const bch::Texture& texture) {
     image.height = texture.height;
     image.rgba = texture.rgba;
     return image;
+}
+
+struct FallbackFont {
+    GLuint base = 0;
+    int pixelHeight = 0;
+};
+
+std::array<FallbackFont, 3> gFallbackFonts{};
+
+int fallbackPixelHeight(int fontKind) {
+    return fontKind == 2 ? 38 : (fontKind == 1 ? 23 : 17);
+}
+
+int fallbackIndex(int fontKind) {
+    return fontKind == 2 ? 2 : (fontKind == 1 ? 1 : 0);
+}
+
+GLuint ensureFallbackFont(int fontKind) {
+    const int index = fallbackIndex(fontKind);
+    auto& cached = gFallbackFonts[static_cast<std::size_t>(index)];
+    if (cached.base) return cached.base;
+
+    HDC dc = wglGetCurrentDC();
+    if (!dc) return 0;
+
+    const int pixelHeight = fallbackPixelHeight(fontKind);
+    HFONT font = CreateFontW(-pixelHeight, 0, 0, 0,
+                             fontKind == 2 ? FW_BOLD : FW_NORMAL,
+                             FALSE, FALSE, FALSE,
+                             ANSI_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             ANTIALIASED_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE,
+                             L"Segoe UI");
+    if (!font) return 0;
+
+    HGDIOBJ old = SelectObject(dc, font);
+    const GLuint base = glGenLists(256);
+    const BOOL ok = base != 0 ? wglUseFontBitmapsW(dc, 0, 256, base) : FALSE;
+    SelectObject(dc, old);
+    DeleteObject(font);
+
+    if (!ok) {
+        if (base) glDeleteLists(base, 256);
+        return 0;
+    }
+
+    cached.base = base;
+    cached.pixelHeight = pixelHeight;
+    return base;
+}
+
+std::string narrowFallbackText(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int size = WideCharToMultiByte(1252, 0, text.data(), static_cast<int>(text.size()),
+                                         nullptr, 0, "?", nullptr);
+    if (size <= 0) return {};
+    std::string out(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(1252, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), size, "?", nullptr);
+    return out;
+}
+
+void drawFallbackQuad(float x, float y, float w, float h,
+                      float r, float g, float b, float a) {
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(r, g, b, a);
+    glBegin(GL_QUADS);
+    glVertex2f(x, y);
+    glVertex2f(x + w, y);
+    glVertex2f(x + w, y + h);
+    glVertex2f(x, y + h);
+    glEnd();
 }
 
 } // namespace
@@ -164,8 +240,6 @@ bool RomUiSkin::load(storage::RomAssetCache& assets) {
         }
     };
 
-    // First pass: inspect the actual bytes. Filename heuristics affect ranking only;
-    // they never decide whether a resource is inspected.
     for (const auto& path : resources) {
         try {
             const auto bytes = assets.extractResource(path);
@@ -205,8 +279,6 @@ bool RomUiSkin::load(storage::RomAssetCache& assets) {
         }
     }
 
-    // Some NW4C UI packages carry the actual raster artwork as BCH textures.
-    // Only inspect BCH files that look UI-related to avoid parsing every Pokemon.
     if (!bestButton.image.valid() || !bestPanel.image.valid()) {
         for (const auto& path : resources) {
             const std::string p = lower(path);
@@ -331,13 +403,33 @@ void RomUiSkin::drawTexture(unsigned int texture,
 }
 
 void RomUiSkin::drawPanel(float x, float y, float w, float h, float alpha) const {
-    drawTexture(panelTexture_, x, y, w, h, 1.0f, 1.0f, 1.0f, alpha);
+    if (panelTexture_) {
+        drawTexture(panelTexture_, x, y, w, h, 1.0f, 1.0f, 1.0f, alpha);
+        return;
+    }
+    drawFallbackQuad(x, y, w, h, 0.055f, 0.095f, 0.15f, alpha * 0.94f);
+    glColor4f(0.50f, 0.76f, 0.96f, alpha);
+    glBegin(GL_LINE_LOOP);
+    glVertex2f(x, y); glVertex2f(x + w, y); glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+    glEnd();
 }
 
 void RomUiSkin::drawButton(float x, float y, float w, float h, bool hovered, bool enabled) const {
     const float brightness = !enabled ? 0.48f : (hovered ? 1.0f : 0.86f);
     const float alpha = enabled ? 1.0f : 0.72f;
-    drawTexture(buttonTexture_, x, y, w, h, brightness, brightness, brightness, alpha);
+    if (buttonTexture_) {
+        drawTexture(buttonTexture_, x, y, w, h, brightness, brightness, brightness, alpha);
+        return;
+    }
+
+    if (!enabled) drawFallbackQuad(x, y, w, h, 0.13f, 0.15f, 0.18f, 0.72f);
+    else if (hovered) drawFallbackQuad(x, y, w, h, 0.08f, 0.43f, 0.78f, 0.98f);
+    else drawFallbackQuad(x, y, w, h, 0.07f, 0.28f, 0.55f, 0.94f);
+
+    glColor4f(enabled ? 0.68f : 0.34f, enabled ? 0.86f : 0.38f, enabled ? 1.0f : 0.44f, 1.0f);
+    glBegin(GL_LINE_LOOP);
+    glVertex2f(x, y); glVertex2f(x + w, y); glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+    glEnd();
 }
 
 float RomUiSkin::fontScale(int fontKind) const {
@@ -347,7 +439,9 @@ float RomUiSkin::fontScale(int fontKind) const {
 }
 
 float RomUiSkin::textWidth(const std::wstring& text, int fontKind) const {
-    if (!fontReady_) return 0.0f;
+    if (!fontReady_) {
+        return static_cast<float>(text.size()) * static_cast<float>(fallbackPixelHeight(fontKind)) * 0.56f;
+    }
     const float scale = fontScale(fontKind);
     float width = 0.0f;
     for (wchar_t ch : text) {
@@ -364,7 +458,23 @@ void RomUiSkin::drawText(float x,
                          const std::wstring& text,
                          int fontKind,
                          bool centered) const {
-    if (!fontReady_ || text.empty()) return;
+    if (text.empty()) return;
+
+    if (!fontReady_) {
+        const GLuint base = ensureFallbackFont(fontKind);
+        if (!base) return;
+        if (centered) x -= textWidth(text, fontKind) * 0.5f;
+        const std::string bytes = narrowFallbackText(text);
+        if (bytes.empty()) return;
+
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        glRasterPos2f(x, baselineY);
+        glListBase(base);
+        glCallLists(static_cast<GLsizei>(bytes.size()), GL_UNSIGNED_BYTE, bytes.data());
+        return;
+    }
+
     const float scale = fontScale(fontKind);
     if (centered) x -= textWidth(text, fontKind) * 0.5f;
 
