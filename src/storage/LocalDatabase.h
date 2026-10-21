@@ -23,6 +23,7 @@ public:
 
     std::optional<std::wstring> setting(const std::string& key) const;
     bool setSetting(const std::string& key, const std::wstring& value);
+    bool removeSetting(const std::string& key);
 
 private:
     using Open16Fn = int (*)(const void*, sqlite3**);
