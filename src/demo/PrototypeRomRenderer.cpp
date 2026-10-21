@@ -814,8 +814,8 @@ void PrototypeRomRenderer::render() {
     wglMakeCurrent(dc_, gl_);
     RECT client{};
     GetClientRect(window_, &client);
-    const int width = std::max(1, client.right - client.left);
-    const int height = std::max(1, client.bottom - client.top);
+    const int width = std::max(1, static_cast<int>(client.right - client.left));
+    const int height = std::max(1, static_cast<int>(client.bottom - client.top));
 
     glViewport(0, 0, width, height);
     glClearColor(0.38f, 0.66f, 0.86f, 1.0f);
