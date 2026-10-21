@@ -4,9 +4,13 @@
 
 namespace promptemon::rom {
 
-bool RomModelArchive::open(const std::filesystem::path& romDirectory) {
+bool RomModelArchive::open(const std::filesystem::path& input) {
+    return open(std::vector<std::filesystem::path>{input});
+}
+
+bool RomModelArchive::open(const std::vector<std::filesystem::path>& inputs) {
     close();
-    library_ = RomLibrary::scan(romDirectory);
+    library_ = RomLibrary::scan(inputs);
 
     std::size_t sourceIndex = 0;
     for (const auto& entry : library_.entries()) {
@@ -19,8 +23,7 @@ bool RomModelArchive::open(const std::filesystem::path& romDirectory) {
             slot.source = std::move(source);
             sources_.push_back(std::move(slot));
         } catch (...) {
-            // The library keeps the ROM visible even if a model provider cannot
-            // be opened. One bad ROM must not prevent the other ROMs from loading.
+            // One bad ROM must not prevent the remaining selected ROMs from loading.
         }
     }
     return !library_.empty();
