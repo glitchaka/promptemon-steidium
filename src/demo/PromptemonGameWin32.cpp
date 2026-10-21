@@ -1,13 +1,17 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlobj.h>
 
 #include "demo/PrototypeRomRenderer.h"
 #include "rom/RomModelArchive.h"
+#include "storage/LocalDatabase.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <exception>
 #include <filesystem>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -20,6 +24,7 @@ namespace {
 using promptemon::demo::GameAction;
 using promptemon::demo::PrototypeRomRenderer;
 using promptemon::rom::RomModelArchive;
+using promptemon::storage::LocalDatabase;
 
 enum class Screen { MainMenu, Options, Intro, StarterSelect, Hub, Hunt, Battle };
 enum class Stat { HP, Attack, Defense, SpAttack, SpDefense, Speed };
@@ -142,33 +147,50 @@ int damageFor(const Species& a, int al, const std::array<int,6>& aiv,
     return std::max(1, base * randomInt(85,100) / 100);
 }
 
-std::filesystem::path executableDirectory() {
-    std::wstring buffer(32768, L'\0');
-    DWORD n = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (!n || n >= buffer.size()) return {};
-    buffer.resize(n);
-    return std::filesystem::path(buffer).parent_path();
+std::optional<std::filesystem::path> chooseRomDirectory() {
+    BROWSEINFOW info{};
+    info.hwndOwner = nullptr;
+    info.lpszTitle = L"Selecciona la carpeta que contiene tus ROMs de Pokemon";
+    info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_NONEWFOLDERBUTTON;
+
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&info);
+    if (!item) return std::nullopt;
+
+    wchar_t selected[MAX_PATH]{};
+    const BOOL ok = SHGetPathFromIDListW(item, selected);
+    CoTaskMemFree(item);
+    if (!ok || !*selected) return std::nullopt;
+    return std::filesystem::path(selected);
 }
 
-std::filesystem::path findRomsFrom(std::filesystem::path start) {
+bool loadRomDirectory(const std::filesystem::path& directory, std::wstring& error) {
+    gArchive.close();
+    gModelResources.clear();
+    gResolvedModels.clear();
+
     std::error_code ec;
-    start = std::filesystem::absolute(start, ec);
-    if (ec) return {};
-    for (;;) {
-        const auto candidate = start / L"roms";
-        if (std::filesystem::is_directory(candidate, ec)) return candidate;
-        ec.clear();
-        const auto parent = start.parent_path();
-        if (parent.empty() || parent == start) break;
-        start = parent;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        error = L"La carpeta seleccionada ya no existe.";
+        return false;
     }
-    return {};
-}
 
-std::filesystem::path romDirectory() {
-    if (auto p = findRomsFrom(std::filesystem::current_path()); !p.empty()) return p;
-    if (auto p = findRomsFrom(executableDirectory()); !p.empty()) return p;
-    return {};
+    try {
+        if (!gArchive.open(directory) || gArchive.library().empty()) {
+            error = L"La carpeta no contiene una ROM reconocible.";
+            return false;
+        }
+        gModelResources = gArchive.modelResources();
+        if (gModelResources.empty()) {
+            error = L"Se detecto la ROM, pero no contiene recursos BCH compatibles para este prototipo.";
+            gArchive.close();
+            return false;
+        }
+        return true;
+    } catch (const std::exception&) {
+        gArchive.close();
+        error = L"No se pudo abrir la ROM de esa carpeta.";
+        return false;
+    }
 }
 
 const std::string& modelFor(const Species& species) {
@@ -258,20 +280,9 @@ std::wstring ivSummary() {
     return s.str();
 }
 
-void showMainMenu() {
-    gScreen = Screen::MainMenu;
-    gRenderer.showMainMenu();
-}
-
-void showOptions() {
-    gScreen = Screen::Options;
-    gRenderer.showOptions(gVolume, gFullscreen);
-}
-
-void showIntro() {
-    gScreen = Screen::Intro;
-    gRenderer.showIntro();
-}
+void showMainMenu() { gScreen = Screen::MainMenu; gRenderer.showMainMenu(); }
+void showOptions() { gScreen = Screen::Options; gRenderer.showOptions(gVolume, gFullscreen); }
+void showIntro() { gScreen = Screen::Intro; gRenderer.showIntro(); }
 
 void showStarterSelect() {
     gScreen = Screen::StarterSelect;
@@ -314,10 +325,7 @@ void showHunt() {
                        statName(gWild.species->ivReward), gWild.shiny);
 }
 
-void enterHunt() {
-    generateWild();
-    showHunt();
-}
+void enterHunt() { generateWild(); showHunt(); }
 
 void showBattleState() {
     gScreen = Screen::Battle;
@@ -464,10 +472,7 @@ void handleAction(GameAction action) {
     switch (action) {
         case GameAction::NewGame: gHasStarter = false; showIntro(); break;
         case GameAction::Options: showOptions(); break;
-        case GameAction::Back:
-            if (gScreen == Screen::Options || gScreen == Screen::Hub) showMainMenu();
-            else showMainMenu();
-            break;
+        case GameAction::Back: showMainMenu(); break;
         case GameAction::IntroContinue: showStarterSelect(); break;
         case GameAction::StarterRattata: chooseStarter(kSpecies[0]); break;
         case GameAction::StarterPidgey: chooseStarter(kSpecies[1]); break;
@@ -494,7 +499,7 @@ void resizeSurface(HWND hwnd) {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_CREATE: {
+        case WM_CREATE:
             gWindow = hwnd;
             if (!gRenderer.create(hwnd, &gArchive)) return -1;
             resizeSurface(hwnd);
@@ -505,7 +510,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetTimer(hwnd, ID_RENDER_TIMER, 16, nullptr);
             showMainMenu();
             return 0;
-        }
         case WM_SIZE:
             resizeSurface(hwnd);
             return 0;
@@ -537,24 +541,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
-    const auto roms = romDirectory();
-    if (roms.empty()) {
+    const HRESULT ole = OleInitialize(nullptr);
+    const bool uninitializeOle = SUCCEEDED(ole);
+
+    LocalDatabase database;
+    if (!database.open()) {
         MessageBoxW(nullptr,
-                    L"No se encontro la carpeta roms. Coloca tu ROM de Pokemon Rumble World dentro de la carpeta roms del proyecto.",
+                    L"No se pudo abrir la base de datos local del jugador. Se necesita winsqlite3.dll para guardar la configuracion.",
                     L"Promptemon Steidium", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-    if (!gArchive.open(roms) || gArchive.library().empty()) {
-        MessageBoxW(nullptr, L"La carpeta roms no contiene una ROM reconocible.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
+        if (uninitializeOle) OleUninitialize();
         return 1;
     }
 
-    gModelResources = gArchive.modelResources();
-    if (gModelResources.empty()) {
-        MessageBoxW(nullptr,
-                    L"La ROM fue detectada, pero no se encontraron recursos BCH utilizables.",
-                    L"Promptemon Steidium", MB_OK | MB_ICONERROR);
-        return 1;
+    bool romLoaded = false;
+    if (const auto saved = database.setting("rom_directory")) {
+        std::wstring ignoredError;
+        romLoaded = loadRomDirectory(std::filesystem::path(*saved), ignoredError);
+    }
+
+    while (!romLoaded) {
+        const auto selected = chooseRomDirectory();
+        if (!selected) {
+            if (uninitializeOle) OleUninitialize();
+            return 0;
+        }
+
+        std::wstring error;
+        if (!loadRomDirectory(*selected, error)) {
+            MessageBoxW(nullptr, error.c_str(), L"Carpeta de ROMs no valida", MB_OK | MB_ICONWARNING);
+            continue;
+        }
+
+        database.setSetting("rom_directory", selected->wstring());
+        romLoaded = true;
     }
 
     WNDCLASSW wc{};
@@ -565,13 +584,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wc.hbrBackground = nullptr;
     wc.lpszClassName = L"PromptemonPlayableGame";
-    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        if (uninitializeOle) OleUninitialize();
+        return 1;
+    }
 
     HWND window = CreateWindowExW(0, wc.lpszClassName, L"Promptemon Steidium",
                                   WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760,
                                   nullptr, nullptr, instance, nullptr);
-    if (!window) return 1;
+    if (!window) {
+        if (uninitializeOle) OleUninitialize();
+        return 1;
+    }
 
     ShowWindow(window, showCommand);
     UpdateWindow(window);
@@ -581,5 +606,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+
+    if (uninitializeOle) OleUninitialize();
     return static_cast<int>(message.wParam);
 }
