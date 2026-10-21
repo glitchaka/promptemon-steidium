@@ -3,8 +3,8 @@
 
 #include "storage/LocalDatabase.h"
 
-#include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace promptemon::storage {
 namespace {
@@ -45,6 +45,18 @@ int captureFirstColumn(void* context, int argc, char** argv, char**) {
     return 0;
 }
 
+std::filesystem::path executableDirectory() {
+    std::vector<wchar_t> buffer(512);
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) return std::filesystem::current_path();
+        if (length < buffer.size() - 1) {
+            return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
 } // namespace
 
 LocalDatabase::~LocalDatabase() {
@@ -74,15 +86,7 @@ bool LocalDatabase::loadSqlite() {
 }
 
 std::filesystem::path LocalDatabase::defaultDatabasePath() {
-    wchar_t* localAppData = nullptr;
-    std::size_t length = 0;
-    if (_wdupenv_s(&localAppData, &length, L"LOCALAPPDATA") == 0 && localAppData && *localAppData) {
-        std::filesystem::path path(localAppData);
-        std::free(localAppData);
-        return path / L"PromptemonSteidium" / L"player.db";
-    }
-    if (localAppData) std::free(localAppData);
-    return std::filesystem::current_path() / L"player.db";
+    return executableDirectory() / L"player.db";
 }
 
 bool LocalDatabase::open() {
