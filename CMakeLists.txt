@@ -42,12 +42,12 @@ add_executable(rumble_probe
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
-    # Main playable prototype. The user chooses the ROM directory on first run;
-    # the selected path is stored in the local player SQLite database.
     add_executable(promptemon_demo WIN32
         src/demo/PromptemonGameWin32.cpp
-        src/demo/PrototypeRomRenderer.cpp
+        src/demo/PrototypeRomRendererCache.cpp
+        src/demo/RomUiSkin.cpp
         src/storage/LocalDatabase.cpp
+        src/storage/RomAssetCache.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
     if(MSVC)
@@ -63,7 +63,6 @@ if(WIN32)
         ole32
     )
 
-    # Keep the inspection utility available separately for development.
     add_executable(promptemon_viewer WIN32
         src/demo/PromptemonDemoWin32.cpp
     )
