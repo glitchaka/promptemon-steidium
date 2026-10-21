@@ -17,35 +17,14 @@
 
 namespace promptemon::demo {
 
-enum class GamePage {
-    MainMenu,
-    Intro,
-    StarterSelect,
-    Hub,
-    Hunt,
-    Battle,
-    Options
-};
+enum class GamePage { MainMenu, Intro, StarterSelect, Hub, Hunt, Battle, Options };
 
 enum class GameAction : int {
-    None = 0,
-    NewGame = 100,
-    Options = 101,
-    Back = 102,
-    IntroContinue = 103,
-    StarterRattata = 104,
-    StarterPidgey = 105,
-    StarterCaterpie = 106,
-    Hunt = 107,
-    StartBattle = 108,
-    Move1 = 109,
-    Move2 = 110,
-    ReturnHub = 111,
-    NextBattle = 112,
-    VolumeDown = 113,
-    VolumeUp = 114,
-    Fullscreen = 115,
-    Windowed = 116
+    None = 0, NewGame = 100, Options = 101, Back = 102, IntroContinue = 103,
+    StarterRattata = 104, StarterPidgey = 105, StarterCaterpie = 106,
+    Hunt = 107, StartBattle = 108, Move1 = 109, Move2 = 110,
+    ReturnHub = 111, NextBattle = 112, VolumeDown = 113, VolumeUp = 114,
+    Fullscreen = 115, Windowed = 116
 };
 
 class PrototypeRomRenderer {
@@ -61,46 +40,18 @@ public:
 
     void setStageModel(const std::string& modelPath);
     void setEffectModel(const std::string& modelPath);
-
     void showMainMenu();
     void showIntro();
     void showOptions(int volume, bool fullscreen);
-
-    bool showStarterSelect(const std::string& rattataModel,
-                           const std::string& pidgeyModel,
-                           const std::string& caterpieModel);
-
-    bool showHub(const std::string& playerModel,
-                 const std::wstring& playerName,
-                 int level,
-                 int xp,
-                 int wins,
-                 int losses,
-                 const std::wstring& ivSummary);
-
-    bool showHunt(const std::string& wildModel,
-                  const std::wstring& wildName,
-                  int level,
-                  const std::wstring& ivReward,
-                  bool shiny);
-
-    bool showBattle(const std::string& playerModel,
-                    const std::string& wildModel,
-                    const std::wstring& playerName,
-                    int playerLevel,
-                    int playerHp,
-                    int playerMaxHp,
-                    const std::wstring& wildName,
-                    int wildLevel,
-                    int wildHp,
-                    int wildMaxHp,
-                    const std::wstring& ivReward,
-                    bool shiny,
-                    const std::wstring& move1,
-                    const std::wstring& move2,
-                    const std::wstring& battleLog,
-                    bool battleOver,
-                    bool battleWon);
+    bool showStarterSelect(const std::string& rattataModel, const std::string& pidgeyModel, const std::string& caterpieModel);
+    bool showHub(const std::string& playerModel, const std::wstring& playerName, int level, int xp, int wins, int losses, const std::wstring& ivSummary);
+    bool showHunt(const std::string& wildModel, const std::wstring& wildName, int level, const std::wstring& ivReward, bool shiny);
+    bool showBattle(const std::string& playerModel, const std::string& wildModel,
+                    const std::wstring& playerName, int playerLevel, int playerHp, int playerMaxHp,
+                    const std::wstring& wildName, int wildLevel, int wildHp, int wildMaxHp,
+                    const std::wstring& ivReward, bool shiny,
+                    const std::wstring& move1, const std::wstring& move2,
+                    const std::wstring& battleLog, bool battleOver, bool battleWon);
 
     void playPlayerAction();
     void playWildAction();
@@ -122,16 +73,9 @@ private:
         float fitScale = 1.0f;
         std::unordered_map<std::string, unsigned int> textures;
     };
-
-    struct RectF {
-        float x = 0;
-        float y = 0;
-        float w = 0;
-        float h = 0;
-    };
+    struct RectF { float x=0, y=0, w=0, h=0; };
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
-
     bool initializeOpenGL();
     void shutdownOpenGL();
     bool ensureVisual(Visual& target, const std::string& modelPath, bool loadAnimations = true);
@@ -146,12 +90,8 @@ private:
     void updateStageCompositionBounds();
     void drawStageComposition();
 
-    const bch::Animation* chooseAnimation(Visual& visual,
-                                          const std::vector<std::string>& preferredTokens,
-                                          bool preferNonLoop) const;
-    void playAnimation(Visual& visual,
-                       const std::vector<std::string>& preferredTokens,
-                       bool preferNonLoop);
+    const bch::Animation* chooseAnimation(Visual& visual, const std::vector<std::string>& preferredTokens, bool preferNonLoop) const;
+    void playAnimation(Visual& visual, const std::vector<std::string>& preferredTokens, bool preferNonLoop);
 
     void initializeFonts();
     void releaseFonts();
@@ -171,16 +111,9 @@ private:
 
     void drawPanel(float x, float y, float w, float h, float alpha = 0.86f);
     void drawButton(const RectF& rect, const std::wstring& label, GameAction action, bool enabled = true);
-    void drawHpPanel(const RectF& rect,
-                     const std::wstring& name,
-                     int level,
-                     int hp,
-                     int maxHp,
-                     bool shiny,
-                     bool enemy);
+    void drawHpPanel(const RectF& rect, const std::wstring& name, int level, int hp, int maxHp, bool shiny, bool enemy);
     void drawText(float x, float y, const std::wstring& text, int fontKind = 0, bool centered = false);
     float textWidth(const std::wstring& text, int fontKind) const;
-
     GameAction hitTest(int x, int y) const;
     void addHitTarget(GameAction action, const RectF& rect, bool enabled = true);
     std::wstring cropText(const std::wstring& value, std::size_t maxChars) const;
@@ -198,6 +131,7 @@ private:
     std::string stagePath_;
     std::string stageDirectory_;
 
+    Visual avatar_;
     Visual player_;
     Visual wild_;
     Visual third_;
@@ -215,28 +149,15 @@ private:
     std::wstring move1_;
     std::wstring move2_;
     std::wstring battleLog_;
-    int playerLevel_ = 1;
-    int wildLevel_ = 1;
-    int playerHp_ = 1;
-    int playerMaxHp_ = 1;
-    int wildHp_ = 1;
-    int wildMaxHp_ = 1;
-    int xp_ = 0;
-    int wins_ = 0;
-    int losses_ = 0;
-    int volume_ = 70;
-    bool fullscreen_ = false;
-    bool shiny_ = false;
-    bool battleOver_ = false;
-    bool battleWon_ = false;
+    int playerLevel_ = 1, wildLevel_ = 1;
+    int playerHp_ = 1, playerMaxHp_ = 1, wildHp_ = 1, wildMaxHp_ = 1;
+    int xp_ = 0, wins_ = 0, losses_ = 0, volume_ = 70;
+    bool fullscreen_ = false, shiny_ = false, battleOver_ = false, battleWon_ = false;
 
-    float playerFieldX_ = -3.6f;
-    float playerFieldZ_ = 2.3f;
-    float wildFieldX_ = 3.4f;
-    float wildFieldZ_ = -2.0f;
+    float playerFieldX_ = -3.6f, playerFieldZ_ = 2.3f;
+    float wildFieldX_ = 3.4f, wildFieldZ_ = -2.0f;
     float playerYaw_ = 35.0f;
-    bool attack1Latch_ = false;
-    bool attack2Latch_ = false;
+    bool attack1Latch_ = false, attack2Latch_ = false;
 
     float elapsedSeconds_ = 0.0f;
     float effectTimer_ = 0.0f;
