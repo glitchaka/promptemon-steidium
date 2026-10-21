@@ -154,6 +154,8 @@ private:
     void renderOverlay(int width, int height);
     void setupPerspective(int width, int height);
     void setupOverlay(int width, int height);
+    void updateBattleInput(float dt);
+    bool playerInAttackRange() const;
 
     void drawVisual(Visual& visual, float x, float y, float z, float scale, float yawDegrees);
     void drawStage();
@@ -218,13 +220,21 @@ private:
     bool battleOver_ = false;
     bool battleWon_ = false;
 
-    // Kept only for ABI-neutral cleanup of the previous renderer implementation.
     unsigned int fontSmall_ = 0;
     unsigned int fontMedium_ = 0;
     unsigned int fontLarge_ = 0;
     HFONT hFontSmall_ = nullptr;
     HFONT hFontMedium_ = nullptr;
     HFONT hFontLarge_ = nullptr;
+
+    // Direct field control used on the Rumble-style combat screen.
+    float playerFieldX_ = -2.4f;
+    float playerFieldZ_ = -6.8f;
+    float wildFieldX_ = 2.4f;
+    float wildFieldZ_ = -8.8f;
+    float playerYaw_ = 35.0f;
+    bool attack1Latch_ = false;
+    bool attack2Latch_ = false;
 
     float elapsedSeconds_ = 0.0f;
     float effectTimer_ = 0.0f;
