@@ -114,9 +114,6 @@ std::string resolveCanonicalModel(storage::RomAssetCache* archive,
 
 std::string findBattleGround(storage::RomAssetCache* archive, const std::string& requested) {
     if (!archive) return requested;
-
-    // Rumble World contains actual play fields under stage/<biome>/ground_XX.bch.
-    // Use one complete field. Never stack every ground variant at the origin.
     const std::vector<std::string> preferred = {
         "stage/grassland/ground_01.bch",
         "stage/grassland/ground_02.bch",
@@ -129,9 +126,6 @@ std::string findBattleGround(storage::RomAssetCache* archive, const std::string&
             if (endsWith(p, needle)) return resource;
         }
     }
-
-    // If the bundle does not contain grassland, keep a single real ground resource
-    // from the selected stage directory instead of building the broken composite.
     const auto slash = requested.find_last_of('/');
     const std::string prefix = slash == std::string::npos ? std::string{} : lowerAscii(requested.substr(0, slash + 1));
     for (const auto& resource : archive->modelResources()) {
@@ -197,10 +191,7 @@ void PrototypeRomRenderer::destroy() {
     archive_ = nullptr;
 }
 
-void PrototypeRomRenderer::show(bool visible) {
-    if (window_) ShowWindow(window_, visible ? SW_SHOW : SW_HIDE);
-}
-
+void PrototypeRomRenderer::show(bool visible) { if (window_) ShowWindow(window_, visible ? SW_SHOW : SW_HIDE); }
 void PrototypeRomRenderer::move(int x, int y, int width, int height) {
     if (window_) MoveWindow(window_, x, y, std::max(1, width), std::max(1, height), TRUE);
 }
@@ -239,14 +230,9 @@ void PrototypeRomRenderer::initializeFonts() {
     wglMakeCurrent(dc_, gl_);
     uiSkin_.load(*archive_);
 }
-
 void PrototypeRomRenderer::releaseFonts() { uiSkin_.release(); }
 
-std::vector<std::uint8_t> PrototypeRomRenderer::animationForModel(const std::string&) const {
-    // Rumble World Pokémon BCH files already contain their own skeleton and animation bank.
-    // Loading an arbitrary second BCH from pii/ was mixing skeletons and deforming models.
-    return {};
-}
+std::vector<std::uint8_t> PrototypeRomRenderer::animationForModel(const std::string&) const { return {}; }
 
 bool PrototypeRomRenderer::ensureVisual(Visual& target, const std::string& modelPath, bool loadAnimations) {
     if (modelPath.empty()) return false;
@@ -262,27 +248,21 @@ bool PrototypeRomRenderer::loadVisual(Visual& target, const std::string& modelPa
         const auto model = archive_->extractBch(modelPath);
         auto scene = std::make_unique<bch::Scene>(bch::Scene::parse(model));
         if (scene->meshes().empty()) return false;
-
         target.modelPath = modelPath;
         target.scene = std::move(scene);
         target.frame = 0.0f;
         target.idle = nullptr;
         target.current = nullptr;
-
         if (loadAnimations) {
             target.idle = target.scene->findAnimation("Pii_anim_nomove_kamae");
             if (!target.idle) target.idle = chooseAnimation(target, {"nomove", "kamae", "idle", "wait", "stand"}, false);
             if (!target.idle) {
                 for (const auto& clip : target.scene->animations()) {
-                    if (clip.loop) {
-                        target.idle = &clip;
-                        break;
-                    }
+                    if (clip.loop) { target.idle = &clip; break; }
                 }
             }
             target.current = target.idle;
         }
-
         updateBounds(target);
         uploadTextures(target);
         return true;
@@ -335,7 +315,7 @@ void PrototypeRomRenderer::updateBounds(Visual& target) {
         }
     }
     if (!found) return;
-    target.center = {(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f};
+    target.center = {(mn.x + mx.x) * .5f, (mn.y + mx.y) * .5f, (mn.z + mx.z) * .5f};
     const float extent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z});
     if (extent > 1e-5f) target.fitScale = 1.75f / extent;
 }
@@ -343,7 +323,6 @@ void PrototypeRomRenderer::updateBounds(Visual& target) {
 const bch::Animation* PrototypeRomRenderer::chooseAnimation(
     Visual& visual, const std::vector<std::string>& tokens, bool preferNonLoop) const {
     if (!visual.scene) return nullptr;
-
     const bch::Animation* best = nullptr;
     int bestScore = -100000;
     for (const auto& clip : visual.scene->animations()) {
@@ -351,37 +330,15 @@ const bch::Animation* PrototypeRomRenderer::chooseAnimation(
         int score = 0;
         bool matched = false;
         for (const auto& token : tokens) {
-            if (n.find(lowerAscii(token)) != std::string::npos) {
-                matched = true;
-                score += 100;
-            }
+            if (n.find(lowerAscii(token)) != std::string::npos) { matched = true; score += 100; }
         }
         if (!matched) continue;
         if (preferNonLoop && !clip.loop) score += 40;
         if (preferNonLoop && clip.loop) score -= 25;
         if (clip.frames > 5) score += 10;
-        if (n.find("damage") != std::string::npos || n.find("yarare") != std::string::npos ||
-            n.find("down") != std::string::npos || n.find("dead") != std::string::npos) {
-            if (!containsAny(n, tokens)) score -= 200;
-        }
-        if (score > bestScore) {
-            bestScore = score;
-            best = &clip;
-        }
+        if (score > bestScore) { bestScore = score; best = &clip; }
     }
-
-    if (best) return best;
-    if (preferNonLoop) {
-        for (const auto& clip : visual.scene->animations()) {
-            const std::string n = lowerAscii(clip.name);
-            if (!clip.loop && clip.frames > 5 &&
-                n.find("damage") == std::string::npos && n.find("yarare") == std::string::npos &&
-                n.find("down") == std::string::npos && n.find("dead") == std::string::npos) {
-                return &clip;
-            }
-        }
-    }
-    return nullptr;
+    return best;
 }
 
 void PrototypeRomRenderer::playAnimation(
@@ -411,9 +368,7 @@ void PrototypeRomRenderer::setEffectModel(const std::string& modelPath) {
 
 void PrototypeRomRenderer::showMainMenu() { page_ = GamePage::MainMenu; render(); }
 void PrototypeRomRenderer::showIntro() { page_ = GamePage::Intro; render(); }
-void PrototypeRomRenderer::showOptions(int volume, bool fullscreen) {
-    page_ = GamePage::Options; volume_ = volume; fullscreen_ = fullscreen; render();
-}
+void PrototypeRomRenderer::showOptions(int volume, bool fullscreen) { page_ = GamePage::Options; volume_ = volume; fullscreen_ = fullscreen; render(); }
 
 bool PrototypeRomRenderer::showStarterSelect(const std::string& a, const std::string& b, const std::string& c) {
     page_ = GamePage::StarterSelect;
@@ -446,6 +401,7 @@ bool PrototypeRomRenderer::showBattle(const std::string& pm, const std::string& 
                                       const std::wstring& iv, bool shiny,
                                       const std::wstring& m1, const std::wstring& m2,
                                       const std::wstring& log, bool over, bool won) {
+    const bool entering = page_ != GamePage::Battle;
     page_ = GamePage::Battle;
     playerName_ = pn; playerLevel_ = pl; playerHp_ = php; playerMaxHp_ = std::max(1, pmax);
     wildName_ = wn; wildLevel_ = wl; wildHp_ = whp; wildMaxHp_ = std::max(1, wmax);
@@ -453,6 +409,13 @@ bool PrototypeRomRenderer::showBattle(const std::string& pm, const std::string& 
     battleOver_ = over; battleWon_ = won;
     const bool a = ensureVisual(player_, resolveCanonicalModel(archive_, pm, pn), true);
     const bool b = ensureVisual(wild_, resolveCanonicalModel(archive_, wm, wn), true);
+    if (entering) {
+        playerFieldX_ = -2.8f; playerFieldZ_ = -6.2f;
+        wildFieldX_ = 2.4f; wildFieldZ_ = -9.1f;
+        playerYaw_ = 35.0f;
+        attack1Latch_ = attack2Latch_ = false;
+        if (window_) SetFocus(window_);
+    }
     render();
     return a && b;
 }
@@ -479,7 +442,7 @@ void PrototypeRomRenderer::setupPerspective(int width, int height) {
     const double aspect = static_cast<double>(std::max(1, width)) / std::max(1, height);
     const double top = .42;
     const double right = top * aspect;
-    glFrustum(-right, right, -top, top, .8, 120.0);
+    glFrustum(-right, right, -top, top, .8, 140.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 }
@@ -491,6 +454,51 @@ void PrototypeRomRenderer::setupOverlay(int width, int height) {
     glOrtho(0, width, height, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+}
+
+bool PrototypeRomRenderer::playerInAttackRange() const {
+    const float dx = wildFieldX_ - playerFieldX_;
+    const float dz = wildFieldZ_ - playerFieldZ_;
+    return dx * dx + dz * dz <= 8.0f;
+}
+
+void PrototypeRomRenderer::updateBattleInput(float dt) {
+    if (page_ != GamePage::Battle || battleOver_) return;
+
+    float dx = 0.0f, dz = 0.0f;
+    if (GetAsyncKeyState('A') & 0x8000 || GetAsyncKeyState(VK_LEFT) & 0x8000) dx -= 1.0f;
+    if (GetAsyncKeyState('D') & 0x8000 || GetAsyncKeyState(VK_RIGHT) & 0x8000) dx += 1.0f;
+    if (GetAsyncKeyState('W') & 0x8000 || GetAsyncKeyState(VK_UP) & 0x8000) dz -= 1.0f;
+    if (GetAsyncKeyState('S') & 0x8000 || GetAsyncKeyState(VK_DOWN) & 0x8000) dz += 1.0f;
+
+    const float len = std::sqrt(dx * dx + dz * dz);
+    if (len > .01f) {
+        dx /= len; dz /= len;
+        const float speed = 3.0f;
+        playerFieldX_ = std::clamp(playerFieldX_ + dx * speed * dt, -5.0f, 5.0f);
+        playerFieldZ_ = std::clamp(playerFieldZ_ + dz * speed * dt, -11.0f, -4.5f);
+        playerYaw_ = std::atan2(dx, -dz) * 180.0f / kPi;
+        if (player_.current == player_.idle) {
+            if (const auto* walk = chooseAnimation(player_, {"walk", "run", "move", "aruki"}, false)) {
+                player_.current = walk;
+                player_.frame = 0.0f;
+            }
+        }
+    } else if (effectTimer_ <= 0.0f && player_.current && player_.current != player_.idle && player_.current->loop) {
+        player_.current = player_.idle;
+        player_.frame = 0.0f;
+    }
+
+    const bool attack1 = (GetAsyncKeyState('Z') & 0x8000) || (GetAsyncKeyState('J') & 0x8000) || (GetAsyncKeyState(VK_SPACE) & 0x8000);
+    const bool attack2 = (GetAsyncKeyState('X') & 0x8000) || (GetAsyncKeyState('K') & 0x8000);
+
+    if (attack1 && !attack1Latch_ && parent_ && playerInAttackRange() && effectTimer_ <= 0.0f)
+        SendMessageW(parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(GameAction::Move1), BN_CLICKED), 0);
+    if (attack2 && !attack2Latch_ && parent_ && playerInAttackRange() && effectTimer_ <= 0.0f)
+        SendMessageW(parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(GameAction::Move2), BN_CLICKED), 0);
+
+    attack1Latch_ = attack1;
+    attack2Latch_ = attack2;
 }
 
 void PrototypeRomRenderer::drawVisual(Visual& visual, float x, float y, float z, float scale, float yaw) {
@@ -507,8 +515,7 @@ void PrototypeRomRenderer::drawVisual(Visual& visual, float x, float y, float z,
 
 void PrototypeRomRenderer::drawStage() {
     if (!stage_.scene) return;
-    // One real Rumble World field, framed as the play surface rather than as a backdrop.
-    drawVisual(stage_, 0.0f, -0.35f, -11.4f, 8.2f, 0.0f);
+    drawVisual(stage_, 0.0f, -0.25f, -11.4f, 10.5f, 0.0f);
 }
 
 void PrototypeRomRenderer::drawShadow(float x, float y, float z, float rx, float rz, float alpha) {
@@ -530,13 +537,12 @@ void PrototypeRomRenderer::drawFallbackEffect(float x, float y, float z, float p
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     const float pulse = std::sin(std::clamp(phase, 0.0f, 1.0f) * kPi);
-    const float r = .20f + pulse * .72f;
-    const float alpha = std::max(0.0f, 1.0f - phase);
-    glColor4f(1.0f, .88f, .25f, alpha);
+    const float r = .18f + pulse * .80f;
+    glColor4f(1.0f, .90f, .28f, std::max(0.0f, 1.0f - phase));
     glBegin(GL_LINES);
-    for (int i = 0; i < 12; ++i) {
-        const float a = i / 12.0f * 2.0f * kPi;
-        glVertex3f(x + std::cos(a) * .12f, y + std::sin(a) * .12f, z);
+    for (int i = 0; i < 16; ++i) {
+        const float a = i / 16.0f * 2.0f * kPi;
+        glVertex3f(x + std::cos(a) * .10f, y + std::sin(a) * .10f, z);
         glVertex3f(x + std::cos(a) * r, y + std::sin(a) * r, z);
     }
     glEnd();
@@ -545,11 +551,10 @@ void PrototypeRomRenderer::drawFallbackEffect(float x, float y, float z, float p
 void PrototypeRomRenderer::drawAttackEffect() {
     if (effectTimer_ <= 0) return;
     const float phase = 1.0f - effectTimer_ / 1.05f;
-    const float x = effectTargetsWild_ ? 2.25f : -2.25f;
-    const float y = .05f;
-    const float z = effectTargetsWild_ ? -8.8f : -6.9f;
-    if (effect_.scene) drawVisual(effect_, x, y, z, .55f, 0);
-    else drawFallbackEffect(x, y, z, phase);
+    const float x = effectTargetsWild_ ? wildFieldX_ : playerFieldX_;
+    const float z = effectTargetsWild_ ? wildFieldZ_ : playerFieldZ_;
+    if (effect_.scene) drawVisual(effect_, x, .75f, z, .5f, 0);
+    else drawFallbackEffect(x, .80f, z, phase);
 }
 
 void PrototypeRomRenderer::renderWorld(int width, int height) {
@@ -559,11 +564,11 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Rumble-style elevated gameplay camera: the level is the floor filling the frame,
-    // not a mesh standing vertically behind the Pokémon.
     glPushMatrix();
-    glTranslatef(0.0f, -2.15f, 0.0f);
-    glRotatef(22.0f, 1.0f, 0.0f, 0.0f);
+    const float followX = page_ == GamePage::Battle ? -playerFieldX_ * .16f : 0.0f;
+    const float followZ = page_ == GamePage::Battle ? -(playerFieldZ_ + 7.5f) * .10f : 0.0f;
+    glTranslatef(followX, -2.35f, followZ);
+    glRotatef(27.0f, 1.0f, 0.0f, 0.0f);
     drawStage();
 
     switch (page_) {
@@ -580,40 +585,40 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
             drawVisual(player_, 0.0f, .72f, -7.2f, .55f, 0);
             break;
         case GamePage::Hunt:
-            drawShadow(.55f, .40f, -7.8f, .42f, .24f, .32f);
-            drawVisual(wild_, .55f, .72f, -7.8f, .55f, -10);
+            drawShadow(-1.4f, .40f, -6.7f, .40f, .23f, .30f);
+            drawShadow(1.3f, .40f, -8.2f, .40f, .23f, .30f);
+            drawVisual(player_, -1.4f, .72f, -6.7f, .50f, 30);
+            drawVisual(wild_, 1.3f, .72f, -8.2f, .50f, -30);
             break;
         case GamePage::Battle: {
-            const float phase = effectTimer_ > 0.0f ? 1.0f - effectTimer_ / 1.05f : 0.0f;
-            const float pulse = effectTimer_ > 0.0f ? std::sin(std::clamp(phase, 0.0f, 1.0f) * kPi) : 0.0f;
-            const float playerLunge = effectTargetsWild_ ? pulse * .72f : 0.0f;
-            const float wildLunge = !effectTargetsWild_ ? pulse * .72f : 0.0f;
-            const float playerRecoil = !effectTargetsWild_ ? pulse * .16f : 0.0f;
-            const float wildRecoil = effectTargetsWild_ ? pulse * .16f : 0.0f;
-
-            const float px = -2.35f + playerLunge - playerRecoil;
-            const float wx = 2.35f - wildLunge + wildRecoil;
-            drawShadow(px, .40f, -6.9f, .46f, .26f, .34f);
-            drawShadow(wx, .40f, -8.8f, .46f, .26f, .34f);
-            drawVisual(player_, px, .72f, -6.9f, .50f, 32);
-            drawVisual(wild_, wx, .72f, -8.8f, .50f, -32);
+            float px = playerFieldX_, pz = playerFieldZ_;
+            float wx = wildFieldX_, wz = wildFieldZ_;
+            if (effectTimer_ > 0.0f) {
+                const float phase = 1.0f - effectTimer_ / 1.05f;
+                const float pulse = std::sin(std::clamp(phase, 0.0f, 1.0f) * kPi);
+                float dx = wx - px, dz = wz - pz;
+                const float dist = std::max(.001f, std::sqrt(dx * dx + dz * dz));
+                dx /= dist; dz /= dist;
+                if (effectTargetsWild_) { px += dx * pulse * .70f; pz += dz * pulse * .70f; wx += dx * pulse * .10f; wz += dz * pulse * .10f; }
+                else { wx -= dx * pulse * .70f; wz -= dz * pulse * .70f; px -= dx * pulse * .10f; pz -= dz * pulse * .10f; }
+            }
+            const float enemyYaw = std::atan2(px - wx, -(pz - wz)) * 180.0f / kPi;
+            drawShadow(px, .40f, pz, .40f, .23f, .33f);
+            drawShadow(wx, .40f, wz, .40f, .23f, .33f);
+            drawVisual(player_, px, .72f, pz, .48f, playerYaw_);
+            drawVisual(wild_, wx, .72f, wz, .48f, enemyYaw);
             drawAttackEffect();
             break;
         }
-        default:
-            break;
+        default: break;
     }
     glPopMatrix();
 }
 
-void PrototypeRomRenderer::drawPanel(float x, float y, float w, float h, float a) {
-    uiSkin_.drawPanel(x, y, w, h, a);
-}
+void PrototypeRomRenderer::drawPanel(float x, float y, float w, float h, float a) { uiSkin_.drawPanel(x, y, w, h, a); }
 float PrototypeRomRenderer::textWidth(const std::wstring& t, int k) const { return uiSkin_.textWidth(t, k); }
 void PrototypeRomRenderer::drawText(float x, float y, const std::wstring& t, int k, bool c) { uiSkin_.drawText(x, y, t, k, c); }
-void PrototypeRomRenderer::addHitTarget(GameAction a, const RectF& r, bool e) {
-    if (e && a != GameAction::None) hitTargets_.push_back({a, r});
-}
+void PrototypeRomRenderer::addHitTarget(GameAction a, const RectF& r, bool e) { if (e && a != GameAction::None) hitTargets_.push_back({a, r}); }
 void PrototypeRomRenderer::drawButton(const RectF& r, const std::wstring& label, GameAction a, bool enabled) {
     const bool hover = enabled && a == hoverAction_;
     uiSkin_.drawButton(r.x, r.y, r.w, r.h, hover, enabled);
@@ -692,25 +697,38 @@ void PrototypeRomRenderer::renderOverlay(int width, int height) {
             drawButton({40, H - 76, 170, 42}, L"Menu", GameAction::Back, true);
             break;
         case GamePage::Hunt:
-            drawPanel(36, 32, std::min(450.0f, W * .40f), 104, .90f);
-            drawText(56, 68, shiny_ ? L"[SHINY] " + wildName_ : wildName_, 1, false);
-            drawText(56, 99, L"Nv. " + std::to_wstring(wildLevel_) + L"   Aporta IV: " + ivReward_, 0, false);
-            drawButton({W - 294, H - 84, 244, 50}, L"Combatir", GameAction::StartBattle, true);
-            drawButton({40, H - 78, 180, 44}, L"Volver al Hub", GameAction::ReturnHub, true);
+            drawPanel(30, 26, 360, 86, .82f);
+            drawText(48, 58, shiny_ ? L"[SHINY] " + wildName_ : wildName_, 1, false);
+            drawText(48, 88, L"Nv. " + std::to_wstring(wildLevel_) + L"  IV: " + ivReward_, 0, false);
+            drawButton({W - 250, H - 70, 210, 42}, L"Entrar", GameAction::StartBattle, true);
+            drawButton({36, H - 66, 170, 38}, L"Volver", GameAction::ReturnHub, true);
             break;
         case GamePage::Battle: {
-            const float pw = std::min(340.0f, W * .30f);
-            drawHpPanel({24, 22, pw, 72}, playerName_, playerLevel_, playerHp_, playerMaxHp_, false, false);
-            drawHpPanel({W - pw - 24, 22, pw, 72}, wildName_, wildLevel_, wildHp_, wildMaxHp_, shiny_, true);
-            drawPanel(24, H - 128, W - 48, 96, .90f);
-            drawText(44, H - 98, cropText(battleLog_, 78), 0, false);
-            if (!battleOver_) {
-                const float mw = (W - 120) * .5f;
-                drawButton({40, H - 78, mw, 42}, move1_, GameAction::Move1, true);
-                drawButton({80 + mw, H - 78, mw, 42}, move2_, GameAction::Move2, true);
-            } else {
-                drawButton({40, H - 78, 220, 42}, L"Otro encuentro", GameAction::NextBattle, true);
-                drawButton({W - 260, H - 78, 220, 42}, L"Volver al Hub", GameAction::ReturnHub, true);
+            const float playerRatio = std::clamp(static_cast<float>(playerHp_) / std::max(1, playerMaxHp_), 0.0f, 1.0f);
+            const float wildRatio = std::clamp(static_cast<float>(wildHp_) / std::max(1, wildMaxHp_), 0.0f, 1.0f);
+
+            drawPanel(22, H - 72, std::min(430.0f, W * .38f), 50, .76f);
+            drawText(38, H - 45, playerName_ + L"  Nv." + std::to_wstring(playerLevel_), 0, false);
+            glDisable(GL_TEXTURE_2D);
+            glColor4f(.04f,.06f,.07f,.92f);
+            glBegin(GL_QUADS); glVertex2f(36,H-36); glVertex2f(350,H-36); glVertex2f(350,H-27); glVertex2f(36,H-27); glEnd();
+            glColor4f(.20f,.85f,.35f,1);
+            glBegin(GL_QUADS); glVertex2f(36,H-36); glVertex2f(36 + 314*playerRatio,H-36); glVertex2f(36 + 314*playerRatio,H-27); glVertex2f(36,H-27); glEnd();
+
+            drawPanel(W - 330, 22, 308, 50, .72f);
+            drawText(W - 310, 52, (shiny_ ? L"[SHINY] " : L"") + wildName_, 0, false);
+            glColor4f(.04f,.06f,.07f,.92f);
+            glBegin(GL_QUADS); glVertex2f(W-310,58); glVertex2f(W-42,58); glVertex2f(W-42,66); glVertex2f(W-310,66); glEnd();
+            glColor4f(.88f,.28f,.22f,1);
+            glBegin(GL_QUADS); glVertex2f(W-310,58); glVertex2f(W-310 + 268*wildRatio,58); glVertex2f(W-310 + 268*wildRatio,66); glVertex2f(W-310,66); glEnd();
+
+            drawText(W - 300, H - 44, L"Z/ESPACIO: " + move1_ + L"   X: " + move2_, 0, false);
+            if (!playerInAttackRange() && !battleOver_) drawText(W * .5f, H - 82, L"Acercate al Pokemon para atacar", 0, true);
+            if (battleOver_) {
+                drawPanel(W * .5f - 190, H * .5f - 52, 380, 104, .90f);
+                drawText(W * .5f, H * .5f - 12, battleWon_ ? L"Pokemon derrotado" : L"Has sido derrotado", 1, true);
+                drawButton({W * .5f - 170, H * .5f + 8, 160, 36}, L"Otro encuentro", GameAction::NextBattle, true);
+                drawButton({W * .5f + 10, H * .5f + 8, 160, 36}, L"Volver al Hub", GameAction::ReturnHub, true);
             }
             break;
         }
@@ -752,22 +770,17 @@ void PrototypeRomRenderer::tick() {
     dt = std::clamp(dt, 0.0f, .1f);
     elapsedSeconds_ += dt;
     effectTimer_ = std::max(0.0f, effectTimer_ - dt);
+    updateBattleInput(dt);
 
     auto advance = [dt](Visual& v) {
         if (!v.current) return;
         v.frame += dt * 30.0f;
         if (v.current->frames > 0 && v.frame >= v.current->frames) {
             if (v.current->loop) v.frame = std::fmod(v.frame, v.current->frames);
-            else {
-                v.current = v.idle;
-                v.frame = 0.0f;
-            }
+            else { v.current = v.idle; v.frame = 0.0f; }
         }
     };
-    advance(player_);
-    advance(wild_);
-    advance(third_);
-    advance(effect_);
+    advance(player_); advance(wild_); advance(third_); advance(effect_);
     render();
 }
 
@@ -788,31 +801,20 @@ LRESULT CALLBACK PrototypeRomRenderer::WindowProc(HWND hwnd, UINT msg, WPARAM wp
     }
     switch (msg) {
         case WM_PAINT: {
-            PAINTSTRUCT p{};
-            BeginPaint(hwnd, &p);
-            if (self) self->render();
-            EndPaint(hwnd, &p);
-            return 0;
+            PAINTSTRUCT p{}; BeginPaint(hwnd, &p); if (self) self->render(); EndPaint(hwnd, &p); return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_SIZE:
-            if (self) self->render();
-            return 0;
+        case WM_ERASEBKGND: return 1;
+        case WM_SIZE: if (self) self->render(); return 0;
         case WM_MOUSEMOVE:
             if (self) {
                 const auto a = self->hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
-                if (a != self->hoverAction_) {
-                    self->hoverAction_ = a;
-                    self->render();
-                }
+                if (a != self->hoverAction_) { self->hoverAction_ = a; self->render(); }
             }
             return 0;
         case WM_LBUTTONUP:
             if (self && self->parent_) {
                 const auto a = self->hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
-                if (a != GameAction::None)
-                    SendMessageW(self->parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(a), BN_CLICKED), 0);
+                if (a != GameAction::None) SendMessageW(self->parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(a), BN_CLICKED), 0);
             }
             return 0;
     }
