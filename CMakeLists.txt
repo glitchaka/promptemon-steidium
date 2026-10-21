@@ -42,6 +42,19 @@ add_executable(rumble_probe
 
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
+add_executable(promptemon_resource_packager
+    tools/promptemon_resource_packager.cpp
+)
+
+add_executable(promptemon_resource_sfx
+    tools/promptemon_resource_sfx.cpp
+)
+
+if(MSVC)
+    target_compile_options(promptemon_resource_packager PRIVATE /utf-8)
+    target_compile_options(promptemon_resource_sfx PRIVATE /utf-8)
+endif()
+
 if(WIN32)
     add_executable(promptemon_demo WIN32
         src/demo/PromptemonGameBootstrapWin32.cpp
