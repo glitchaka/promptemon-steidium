@@ -14,7 +14,8 @@ namespace promptemon::rom {
 
 class RomModelArchive {
 public:
-    bool open(const std::filesystem::path& romDirectory);
+    bool open(const std::filesystem::path& input);
+    bool open(const std::vector<std::filesystem::path>& inputs);
     void close();
 
     const RomLibrary& library() const noexcept { return library_; }
