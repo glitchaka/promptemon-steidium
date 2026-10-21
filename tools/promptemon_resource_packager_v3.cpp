@@ -48,6 +48,37 @@ int main(int argc, char** argv) {
             if (!found) throw std::runtime_error("Falta un recurso Pokemon requerido: " + keys.front());
         }
 
+        // Live title/menu scene: use the actual Rumble World Ho-Oh and Lugia models,
+        // plus any animation/motion companions carrying their species names.
+        bool foundHoOh = false;
+        bool foundLugia = false;
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            const auto& p = files[i].lowerPath;
+            if (!startsWith(p, "pii/")) continue;
+            if (contains(p, "houou")) {
+                select(i);
+                foundHoOh = true;
+            }
+            if (contains(p, "rugia") || contains(p, "lugia")) {
+                select(i);
+                foundLugia = true;
+            }
+        }
+        if (!foundHoOh) throw std::runtime_error("Falta pii/HOUOU para la escena inicial");
+        if (!foundLugia) throw std::runtime_error("Falta pii/RUGIA para la escena inicial");
+
+        // The starter/capture presentation uses the game's own Mii models. Package
+        // the complete Mii directory so costumes/parts are not replaced by placeholders.
+        std::size_t miiCount = 0;
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            const auto& p = files[i].lowerPath;
+            if (startsWith(p, "mii/")) {
+                select(i);
+                ++miiCount;
+            }
+        }
+        if (miiCount == 0) throw std::runtime_error("No se encontraron recursos Mii bajo mii/");
+
         std::size_t stageCount = 0;
         for (std::size_t i = 0; i < files.size(); ++i) {
             const auto& p = files[i].lowerPath;
@@ -86,13 +117,15 @@ int main(int argc, char** argv) {
         }
 
         if (!foundFontArchive) throw std::runtime_error("No se encontro font.arc en resources-tx");
-        if (!foundSpanishUi) std::cout << "Aviso: no se encontro game2d.EU_Spanish.arc; se empaqueta la UI disponible\n";
+        if (!foundSpanishUi) throw std::runtime_error("No se encontro game2d.EU_Spanish.arc en resources-tx");
 
         std::cout << "resources-tx: " << resourcesRepo << '\n';
         std::cout << "Origen: " << root << '\n';
         std::cout << "Escenarios stage/: " << stageCount << " archivos detectados\n";
+        std::cout << "Mii/: " << miiCount << " archivos detectados\n";
+        std::cout << "Menu 3D: HOUOU + RUGIA\n";
         std::cout << "Fuente: font.arc\n";
-        std::cout << "UI: game2d.EU_Spanish.arc + recursos UI detectados\n";
+        std::cout << "UI: game2d.EU_Spanish.arc + boot2d.arc + recursos UI detectados\n";
         std::cout << "Recursos seleccionados: " << selected.size() << " de " << files.size() << '\n';
 
         buildSelfExtractor(stub, output, files, selected);
