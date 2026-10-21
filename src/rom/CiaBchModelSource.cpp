@@ -1,6 +1,7 @@
 #include "rom/IRomModelSource.h"
 
 #include "rom/Lzh8.h"
+#include "rom/Lz11.h"
 #include "rom/RumbleWorldArchive.h"
 
 #include <memory>
@@ -9,6 +10,12 @@
 
 namespace promptemon::rom {
 namespace {
+
+std::vector<std::uint8_t> decompressNintendo(std::vector<std::uint8_t> data) {
+    if (Lzh8::isCompressed(data)) return Lzh8::decompress(data);
+    if (Lz11::isCompressed(data)) return Lz11::decompress(data);
+    return data;
+}
 
 class CiaBchModelSource final : public IRomModelSource {
 public:
@@ -38,9 +45,7 @@ public:
 
     std::vector<std::uint8_t> extractResource(const std::string& resourceId) const override {
         if (!archive_) throw std::runtime_error("3DS resource source is closed");
-        auto data = archive_->extract(resourceId);
-        if (Lzh8::isCompressed(data)) data = Lzh8::decompress(data);
-        return data;
+        return decompressNintendo(archive_->extract(resourceId));
     }
 
     bool hasBch(const std::string& resourceId) const override {
