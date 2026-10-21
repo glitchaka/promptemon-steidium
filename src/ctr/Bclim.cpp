@@ -46,17 +46,22 @@ std::uint32_t u32be(const std::vector<std::uint8_t>& data, std::size_t offset) {
 struct Footer {
     std::size_t offset = static_cast<std::size_t>(-1);
     bool bigEndian = false;
+    bool flim = false;
 };
 
 Footer findFooter(const std::vector<std::uint8_t>& data) {
     if (data.size() < 0x28) return {};
     const std::size_t begin = data.size() > 0x100 ? data.size() - 0x100 : 0;
     for (std::size_t pos = data.size() - 0x28;; --pos) {
-        if ((magicAt(data, pos, "CLIM") || magicAt(data, pos, "FLIM")) && pos + 0x28 <= data.size()) {
+        const bool clim = magicAt(data, pos, "CLIM");
+        const bool flim = magicAt(data, pos, "FLIM");
+        if ((clim || flim) && pos + 0x28 <= data.size()) {
             Footer footer;
             footer.offset = pos;
+            footer.flim = flim;
             if (data[pos + 4] == 0xFF && data[pos + 5] == 0xFE) footer.bigEndian = false;
             else if (data[pos + 4] == 0xFE && data[pos + 5] == 0xFF) footer.bigEndian = true;
+            else return {};
             return footer;
         }
         if (pos == begin || pos == 0) break;
@@ -93,8 +98,25 @@ Image decodeBclim(const std::vector<std::uint8_t>& data) {
 
     const int width = static_cast<int>(read16(imag + 0x08));
     const int height = static_cast<int>(read16(imag + 0x0A));
-    const int format = static_cast<int>(read32(imag + 0x0C) & 0x0f);
-    const std::uint32_t declaredImageSize = imagSize >= 0x14 ? read32(imag + 0x10) : static_cast<std::uint32_t>(clim);
+    if (width <= 0 || height <= 0) return {};
+
+    int format = 0;
+    std::uint32_t declaredImageSize = static_cast<std::uint32_t>(clim);
+
+    if (footer.flim) {
+        // BFLIM uses 0x0C-0x0D for file alignment, then one byte for the
+        // texture format and one byte for tile/swizzle. Reading a u32 at 0x0C
+        // (the old code) therefore interpreted the alignment as the format.
+        if (imagSize < 0x14 || imag + 0x14 > data.size()) return {};
+        format = static_cast<int>(data[imag + 0x0E]);
+        declaredImageSize = read32(imag + 0x10);
+    } else {
+        // BCLIM stores the CTR texture format as a 32-bit field at 0x0C.
+        format = static_cast<int>(read32(imag + 0x0C) & 0x0F);
+        if (imagSize >= 0x14) declaredImageSize = read32(imag + 0x10);
+    }
+
+    if (format < 0 || format > 0x0D) return {};
 
     std::size_t imageOffset = 0;
     if (declaredImageSize != 0 && declaredImageSize <= clim) imageOffset = clim - declaredImageSize;
