@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
             {"biidoru", "weedle"},
             {"zubatto", "zubat"},
             {"ishitsubute", "isitubute", "geodude"},
-            {"goosu", "gosu", "ghos", "gastly"},
+            {"goosu", "gosu", "gastly"},
             {"wanrikii", "machop"}
         }};
 
