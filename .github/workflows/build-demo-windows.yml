@@ -1,13 +1,6 @@
 name: Build Windows demo
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'src/**'
-      - 'tools/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/build-demo-windows.yml'
   workflow_dispatch:
 
 jobs:
@@ -31,21 +24,11 @@ jobs:
           @"
           PROMPTEMON STEIDIUM - playable prototype
 
-          Current playable flow:
-          1. Nueva partida
-          2. Introduccion
-          3. Choose Rattata, Pidgey or Caterpie
-          4. Enter Proto Hub
-          5. Go to Zona de Caza
-          6. See the wild Pokemon, its IV training reward and possible shiny state
-          7. Fight a complete turn-based battle
-          8. Winning grants XP and can improve the indicated IV
+          Put your own Pokemon Rumble World ROM inside a 'roms' folder next to the executable.
+          The playable prototype now reads and renders the ROM models directly in Hub, Hunt and Battle.
 
-          Notes:
-          - Load/Delete/Export are intentionally disabled in this cut.
-          - Shiny wild Pokemon use a 1/4096 prototype roll.
-          - The old ROM/BCH 3D viewer remains in the source as the promptemon_viewer target.
-          - ROM models are not yet wired into the battle screen in this logic-first cut.
+          Current flow:
+          Nueva partida -> Introduccion -> starter -> Hub -> Caza -> Combate.
           "@ | Set-Content demo/README.txt
 
       - name: Upload demo
