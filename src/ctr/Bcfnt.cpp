@@ -3,11 +3,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <unordered_map>
 
 namespace promptemon::ctr {
 namespace {
+
+constexpr std::size_t kInvalid = static_cast<std::size_t>(-1);
 
 bool magicAt(const std::vector<std::uint8_t>& data, std::size_t offset, const char* magic) {
     for (std::size_t i = 0; magic[i] != 0; ++i) {
@@ -16,13 +17,19 @@ bool magicAt(const std::vector<std::uint8_t>& data, std::size_t offset, const ch
     return true;
 }
 
-std::uint16_t u16(const std::vector<std::uint8_t>& data, std::size_t offset) {
+std::uint16_t u16le(const std::vector<std::uint8_t>& data, std::size_t offset) {
     if (offset + 2 > data.size()) return 0;
     return static_cast<std::uint16_t>(data[offset]) |
            static_cast<std::uint16_t>(data[offset + 1] << 8);
 }
 
-std::uint32_t u32(const std::vector<std::uint8_t>& data, std::size_t offset) {
+std::uint16_t u16be(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    if (offset + 2 > data.size()) return 0;
+    return static_cast<std::uint16_t>(data[offset] << 8) |
+           static_cast<std::uint16_t>(data[offset + 1]);
+}
+
+std::uint32_t u32le(const std::vector<std::uint8_t>& data, std::size_t offset) {
     if (offset + 4 > data.size()) return 0;
     return static_cast<std::uint32_t>(data[offset]) |
            (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
@@ -30,15 +37,50 @@ std::uint32_t u32(const std::vector<std::uint8_t>& data, std::size_t offset) {
            (static_cast<std::uint32_t>(data[offset + 3]) << 24);
 }
 
+std::uint32_t u32be(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    if (offset + 4 > data.size()) return 0;
+    return (static_cast<std::uint32_t>(data[offset]) << 24) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 8) |
+           static_cast<std::uint32_t>(data[offset + 3]);
+}
+
+struct Reader {
+    const std::vector<std::uint8_t>& data;
+    bool bigEndian = false;
+
+    std::uint16_t u16(std::size_t offset) const {
+        return bigEndian ? u16be(data, offset) : u16le(data, offset);
+    }
+    std::uint32_t u32(std::size_t offset) const {
+        return bigEndian ? u32be(data, offset) : u32le(data, offset);
+    }
+};
+
 int signedByte(std::uint8_t value) {
     return static_cast<int>(static_cast<std::int8_t>(value));
 }
 
 std::size_t pointedSection(std::uint32_t pointer, std::size_t size) {
-    if (pointer < 8) return static_cast<std::size_t>(-1);
+    // FINF pointers reference the payload immediately after an 8-byte section
+    // header, so the section magic is located at pointer - 8.
+    if (pointer < 8) return kInvalid;
     const std::size_t position = static_cast<std::size_t>(pointer - 8);
-    if (position + 8 > size) return static_cast<std::size_t>(-1);
-    return position;
+    return position + 8 <= size ? position : kInvalid;
+}
+
+bool byteOrder(const std::vector<std::uint8_t>& data, bool& bigEndian) {
+    if (data.size() < 6) return false;
+    // Nintendo binary resources write FE FF for BE and FF FE for LE.
+    if (data[4] == 0xFE && data[5] == 0xFF) {
+        bigEndian = true;
+        return true;
+    }
+    if (data[4] == 0xFF && data[5] == 0xFE) {
+        bigEndian = false;
+        return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -62,84 +104,73 @@ BitmapFont decodeBcfnt(const std::vector<std::uint8_t>& data) {
     BitmapFont font;
     if (!isBcfnt(data)) return font;
 
-    // Rumble World resources are little-endian. The BOM bytes are FF FE,
-    // which read as 0xFEFF with the little-endian helpers used here.
-    if (u16(data, 0x04) != 0xFEFFu) return font;
+    bool bigEndian = false;
+    if (!byteOrder(data, bigEndian)) return {};
+    const Reader rd{data, bigEndian};
 
     const bool bffnt = magicAt(data, 0, "FFNT") || magicAt(data, 0, "FFNU");
-    const std::uint16_t headerSize = u16(data, 0x06);
-    if (headerSize < 0x14 || static_cast<std::size_t>(headerSize) + 0x20 > data.size()) return font;
+    const std::uint16_t headerSize = rd.u16(0x06);
+    if (headerSize < 0x14 || static_cast<std::size_t>(headerSize) + 0x20 > data.size()) return {};
 
     const std::size_t finf = headerSize;
-    if (!magicAt(data, finf, "FINF")) return font;
+    if (!magicAt(data, finf, "FINF")) return {};
+    if (rd.u32(finf + 0x04) < 0x20) return {};
 
     std::uint32_t tglpPointer = 0;
     std::uint32_t cwdhPointer = 0;
     std::uint32_t cmapPointer = 0;
 
     if (bffnt) {
-        // BFFNT/FFNT FINF layout (NW font):
-        // 08 type, 09 height, 0A width, 0B ascent,
-        // 0C lineFeed(u16), 0E alterChar(u16), 10..12 default widths,
-        // 13 encoding, 14/18/1C pointers.
-        font.lineFeed = static_cast<int>(u16(data, finf + 0x0C));
-        font.fallbackGlyphIndex = u16(data, finf + 0x0E);
+        // FFNT/BFFNT FINF: 4B, 2H, 4B, 3I after section header.
+        font.lineFeed = static_cast<int>(rd.u16(finf + 0x0C));
+        font.fallbackGlyphIndex = rd.u16(finf + 0x0E);
         font.defaultMetrics.left = signedByte(data[finf + 0x10]);
-        font.defaultMetrics.glyphWidth = signedByte(data[finf + 0x11]);
-        font.defaultMetrics.charWidth = signedByte(data[finf + 0x12]);
-        tglpPointer = u32(data, finf + 0x14);
-        cwdhPointer = u32(data, finf + 0x18);
-        cmapPointer = u32(data, finf + 0x1C);
+        font.defaultMetrics.glyphWidth = static_cast<int>(data[finf + 0x11]);
+        font.defaultMetrics.charWidth = static_cast<int>(data[finf + 0x12]);
+        tglpPointer = rd.u32(finf + 0x14);
+        cwdhPointer = rd.u32(finf + 0x18);
+        cmapPointer = rd.u32(finf + 0x1C);
     } else {
-        // BCFNT/CFNT version-3 CTR FINF layout.
+        // CFNT/BCFNT FINF: 2B, H, 4B, 3I, 4B after section header.
         font.lineFeed = static_cast<int>(data[finf + 0x09]);
-        font.fallbackGlyphIndex = u16(data, finf + 0x0A);
+        font.fallbackGlyphIndex = rd.u16(finf + 0x0A);
         font.defaultMetrics.left = signedByte(data[finf + 0x0C]);
-        font.defaultMetrics.glyphWidth = signedByte(data[finf + 0x0D]);
-        font.defaultMetrics.charWidth = signedByte(data[finf + 0x0E]);
-        tglpPointer = u32(data, finf + 0x10);
-        cwdhPointer = u32(data, finf + 0x14);
-        cmapPointer = u32(data, finf + 0x18);
+        font.defaultMetrics.glyphWidth = static_cast<int>(data[finf + 0x0D]);
+        font.defaultMetrics.charWidth = static_cast<int>(data[finf + 0x0E]);
+        tglpPointer = rd.u32(finf + 0x10);
+        cwdhPointer = rd.u32(finf + 0x14);
+        cmapPointer = rd.u32(finf + 0x18);
     }
 
     const std::size_t tglp = pointedSection(tglpPointer, data.size());
-    if (tglp == static_cast<std::size_t>(-1) || tglp + 0x20 > data.size() || !magicAt(data, tglp, "TGLP")) return {};
+    if (tglp == kInvalid || tglp + 0x20 > data.size() || !magicAt(data, tglp, "TGLP")) return {};
 
     font.cellWidth = static_cast<int>(data[tglp + 0x08]);
     font.cellHeight = static_cast<int>(data[tglp + 0x09]);
 
-    std::uint32_t sheetSize = 0;
+    std::uint32_t sheetSize = rd.u32(tglp + 0x0C);
     int sheetCount = 0;
     int format = 0;
-    std::uint32_t sheetDataOffset = 0;
+    std::uint32_t sheetDataOffset = rd.u32(tglp + 0x1C);
 
     if (bffnt) {
-        // BFFNT TGLP: sheet count is a byte at 0x0A and baseline is u16 at 0x10.
         sheetCount = static_cast<int>(data[tglp + 0x0A]);
-        sheetSize = u32(data, tglp + 0x0C);
-        font.baseline = static_cast<int>(u16(data, tglp + 0x10));
-        format = static_cast<int>(u16(data, tglp + 0x12));
-        font.columns = static_cast<int>(u16(data, tglp + 0x14));
-        font.rows = static_cast<int>(u16(data, tglp + 0x16));
-        font.sheetWidth = static_cast<int>(u16(data, tglp + 0x18));
-        font.sheetHeight = static_cast<int>(u16(data, tglp + 0x1A));
-        sheetDataOffset = u32(data, tglp + 0x1C);
+        font.baseline = static_cast<int>(rd.u16(tglp + 0x10));
     } else {
-        // BCFNT TGLP: baseline is a byte at 0x0A; sheet count is u16 at 0x10.
         font.baseline = static_cast<int>(data[tglp + 0x0A]);
-        sheetSize = u32(data, tglp + 0x0C);
-        sheetCount = static_cast<int>(u16(data, tglp + 0x10));
-        format = static_cast<int>(u16(data, tglp + 0x12));
-        font.columns = static_cast<int>(u16(data, tglp + 0x14));
-        font.rows = static_cast<int>(u16(data, tglp + 0x16));
-        font.sheetWidth = static_cast<int>(u16(data, tglp + 0x18));
-        font.sheetHeight = static_cast<int>(u16(data, tglp + 0x1A));
-        sheetDataOffset = u32(data, tglp + 0x1C);
+        sheetCount = static_cast<int>(rd.u16(tglp + 0x10));
     }
 
+    format = static_cast<int>(rd.u16(tglp + 0x12));
+    font.columns = static_cast<int>(rd.u16(tglp + 0x14));
+    font.rows = static_cast<int>(rd.u16(tglp + 0x16));
+    font.sheetWidth = static_cast<int>(rd.u16(tglp + 0x18));
+    font.sheetHeight = static_cast<int>(rd.u16(tglp + 0x1A));
+
     if (font.cellWidth <= 0 || font.cellHeight <= 0 || font.columns <= 0 || font.rows <= 0 ||
-        font.sheetWidth <= 0 || font.sheetHeight <= 0 || sheetCount <= 0 || sheetCount > 64 ||
-        sheetSize == 0 || sheetDataOffset >= data.size()) {
+        font.sheetWidth <= 0 || font.sheetHeight <= 0 || font.sheetWidth > 4096 || font.sheetHeight > 4096 ||
+        sheetCount <= 0 || sheetCount > 64 || sheetSize == 0 || format < 0 || format > 13 ||
+        sheetDataOffset >= data.size()) {
         return {};
     }
 
@@ -147,21 +178,21 @@ BitmapFont decodeBcfnt(const std::vector<std::uint8_t>& data) {
     for (int i = 0; i < sheetCount; ++i) {
         const std::uint64_t offset64 = static_cast<std::uint64_t>(sheetDataOffset) +
                                        static_cast<std::uint64_t>(sheetSize) * static_cast<std::uint64_t>(i);
-        if (offset64 >= data.size()) return {};
-        Image sheet = decodeTexture(data, static_cast<std::size_t>(offset64), format, font.sheetWidth, font.sheetHeight);
+        if (offset64 >= data.size() || offset64 + sheetSize > data.size()) return {};
+        Image sheet = decodeTexture(data, static_cast<std::size_t>(offset64), format,
+                                    font.sheetWidth, font.sheetHeight);
         if (!sheet.valid()) return {};
         font.sheets.push_back(std::move(sheet));
     }
 
     std::unordered_map<std::uint16_t, GlyphMetrics> widths;
     std::uint32_t nextCwdh = cwdhPointer;
-    int cwdhGuard = 0;
-    while (nextCwdh != 0 && ++cwdhGuard < 1024) {
+    for (int guard = 0; nextCwdh != 0 && guard < 1024; ++guard) {
         const std::size_t section = pointedSection(nextCwdh, data.size());
-        if (section == static_cast<std::size_t>(-1) || section + 0x10 > data.size() || !magicAt(data, section, "CWDH")) break;
-        const std::uint16_t first = u16(data, section + 0x08);
-        const std::uint16_t last = u16(data, section + 0x0A);
-        nextCwdh = u32(data, section + 0x0C);
+        if (section == kInvalid || section + 0x10 > data.size() || !magicAt(data, section, "CWDH")) break;
+        const std::uint16_t first = rd.u16(section + 0x08);
+        const std::uint16_t last = rd.u16(section + 0x0A);
+        nextCwdh = rd.u32(section + 0x0C);
         if (last < first) continue;
         const std::size_t count = static_cast<std::size_t>(last - first) + 1u;
         const std::size_t values = section + 0x10;
@@ -169,49 +200,48 @@ BitmapFont decodeBcfnt(const std::vector<std::uint8_t>& data) {
         for (std::size_t i = 0; i < count; ++i) {
             GlyphMetrics metrics;
             metrics.left = signedByte(data[values + i * 3u]);
-            metrics.glyphWidth = signedByte(data[values + i * 3u + 1u]);
-            metrics.charWidth = signedByte(data[values + i * 3u + 2u]);
+            metrics.glyphWidth = static_cast<int>(data[values + i * 3u + 1u]);
+            metrics.charWidth = static_cast<int>(data[values + i * 3u + 2u]);
             widths[static_cast<std::uint16_t>(first + i)] = metrics;
         }
     }
 
     std::unordered_map<std::uint32_t, std::uint16_t> mapping;
     std::uint32_t nextCmap = cmapPointer;
-    int cmapGuard = 0;
-    while (nextCmap != 0 && ++cmapGuard < 1024) {
+    for (int guard = 0; nextCmap != 0 && guard < 1024; ++guard) {
         const std::size_t section = pointedSection(nextCmap, data.size());
-        if (section == static_cast<std::size_t>(-1) || section + 0x14 > data.size() || !magicAt(data, section, "CMAP")) break;
-        const std::uint16_t firstCode = u16(data, section + 0x08);
-        const std::uint16_t lastCode = u16(data, section + 0x0A);
-        const std::uint16_t method = u16(data, section + 0x0C);
-        nextCmap = u32(data, section + 0x10);
+        if (section == kInvalid || section + 0x14 > data.size() || !magicAt(data, section, "CMAP")) break;
+        const std::uint16_t firstCode = rd.u16(section + 0x08);
+        const std::uint16_t lastCode = rd.u16(section + 0x0A);
+        const std::uint16_t method = rd.u16(section + 0x0C);
+        nextCmap = rd.u32(section + 0x10);
         const std::size_t values = section + 0x14;
         if (lastCode < firstCode) continue;
 
         if (method == 0) {
             if (values + 2 > data.size()) break;
-            const std::uint16_t indexOffset = u16(data, values);
-            for (std::uint32_t code = firstCode; code <= lastCode; ++code) {
+            const std::uint16_t indexOffset = rd.u16(values);
+            for (std::uint32_t code = firstCode; code <= lastCode; ++code)
                 mapping[code] = static_cast<std::uint16_t>(indexOffset + (code - firstCode));
-            }
         } else if (method == 1) {
             const std::size_t count = static_cast<std::size_t>(lastCode - firstCode) + 1u;
             if (values + count * 2u > data.size()) break;
             for (std::size_t i = 0; i < count; ++i) {
-                const std::uint16_t index = u16(data, values + i * 2u);
+                const std::uint16_t index = rd.u16(values + i * 2u);
                 if (index != 0xFFFFu) mapping[static_cast<std::uint32_t>(firstCode) + i] = index;
             }
         } else if (method == 2) {
             if (values + 2 > data.size()) break;
-            const std::uint16_t count = u16(data, values);
+            const std::uint16_t count = rd.u16(values);
             if (values + 2u + static_cast<std::size_t>(count) * 4u > data.size()) break;
             for (std::uint16_t i = 0; i < count; ++i) {
                 const std::size_t entry = values + 2u + static_cast<std::size_t>(i) * 4u;
-                mapping[u16(data, entry)] = u16(data, entry + 2u);
+                mapping[rd.u16(entry)] = rd.u16(entry + 2u);
             }
         }
     }
 
+    if (mapping.empty()) return {};
     const int glyphsPerSheet = font.columns * font.rows;
     if (glyphsPerSheet <= 0) return {};
     const int strideX = font.cellWidth + 1;
