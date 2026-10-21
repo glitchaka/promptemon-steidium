@@ -15,7 +15,7 @@ constexpr std::array<int, 64> kTileOrder = {
     36,37,44,45,38,39,46,47,52,53,60,61,54,55,62,63
 };
 
-std::uint64_t u64(const std::vector<std::uint8_t>& data, std::size_t offset) {
+std::uint64_t u64le(const std::vector<std::uint8_t>& data, std::size_t offset) {
     if (offset + 8 > data.size()) return 0;
     std::uint64_t value = 0;
     for (int i = 0; i < 8; ++i) value |= static_cast<std::uint64_t>(data[offset + i]) << (8 * i);
@@ -24,8 +24,8 @@ std::uint64_t u64(const std::vector<std::uint8_t>& data, std::size_t offset) {
 
 int bytesPerPixel(int format) {
     switch (format) {
-        case 0: return 4;
-        case 1: return 3;
+        case 0: return 4; // RGBA8
+        case 1: return 3; // RGB8
         case 2: case 3: case 4: case 5: case 6: return 2;
         case 7: case 8: case 9: return 1;
         default: return 0;
@@ -62,15 +62,35 @@ void writeRgba(std::vector<std::uint8_t>& out,
     out[offset + 3] = a;
 }
 
+bool enoughPlainData(const std::vector<std::uint8_t>& data,
+                     std::size_t dataOffset,
+                     int format,
+                     int width,
+                     int height) {
+    const std::size_t tilesX = static_cast<std::size_t>((width + 7) / 8);
+    const std::size_t tilesY = static_cast<std::size_t>((height + 7) / 8);
+    std::size_t bytes = 0;
+    if (format == 10 || format == 11) {
+        bytes = tilesX * tilesY * 32u;
+    } else {
+        const int bpp = bytesPerPixel(format);
+        if (bpp <= 0) return false;
+        bytes = tilesX * tilesY * 64u * static_cast<std::size_t>(bpp);
+    }
+    return dataOffset <= data.size() && bytes <= data.size() - dataOffset;
+}
+
 Image decodePlain(const std::vector<std::uint8_t>& data,
                   std::size_t dataOffset,
                   int format,
                   int width,
                   int height) {
+    if (!enoughPlainData(data, dataOffset, format, width, height)) return {};
+
     Image image;
     image.width = width;
     image.height = height;
-    image.rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u, 255);
+    image.rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u, 0);
 
     const int tilesX = (width + 7) / 8;
     const int tilesY = (height + 7) / 8;
@@ -83,86 +103,68 @@ Image decodePlain(const std::vector<std::uint8_t>& data,
                 const int pixelY = tileY * 8 + tilePosition / 8;
                 if (pixelX >= width || pixelY >= height) continue;
 
-                std::uint32_t value = 0;
                 std::size_t offset = dataOffset;
+                std::uint8_t r = 255, g = 255, b = 255, a = 255;
+
                 if (format == 10 || format == 11) {
                     offset += static_cast<std::size_t>((tileY * tilesX + tileX) * 32 + k / 2);
-                    if (offset >= data.size()) continue;
-                    value = (data[offset] >> ((k & 1) ? 4 : 0)) & 0x0f;
+                    const std::uint8_t nibble = static_cast<std::uint8_t>((data[offset] >> ((k & 1) ? 4 : 0)) & 0x0f);
+                    if (format == 10) r = g = b = expand4(nibble); // L4
+                    else a = expand4(nibble);                     // A4
                 } else {
                     const int bpp = bytesPerPixel(format);
-                    if (bpp <= 0) continue;
                     offset += static_cast<std::size_t>((tileY * tilesX + tileX) * 64 * bpp + k * bpp);
-                    if (offset + static_cast<std::size_t>(bpp) > data.size()) continue;
-                    for (int byte = 0; byte < bpp; ++byte) {
-                        value |= static_cast<std::uint32_t>(data[offset + byte]) << (byte * 8);
-                    }
-                }
+                    const std::uint8_t b0 = data[offset];
+                    const std::uint8_t b1 = bpp > 1 ? data[offset + 1] : 0;
+                    const std::uint8_t b2 = bpp > 2 ? data[offset + 2] : 0;
+                    const std::uint8_t b3 = bpp > 3 ? data[offset + 3] : 0;
 
-                std::uint8_t r = 255;
-                std::uint8_t g = 255;
-                std::uint8_t b = 255;
-                std::uint8_t a = 255;
-                switch (format) {
-                    case 0:
-                        a = static_cast<std::uint8_t>(value & 0xff);
-                        b = static_cast<std::uint8_t>((value >> 8) & 0xff);
-                        g = static_cast<std::uint8_t>((value >> 16) & 0xff);
-                        r = static_cast<std::uint8_t>((value >> 24) & 0xff);
-                        break;
-                    case 1:
-                        b = static_cast<std::uint8_t>(value & 0xff);
-                        g = static_cast<std::uint8_t>((value >> 8) & 0xff);
-                        r = static_cast<std::uint8_t>((value >> 16) & 0xff);
-                        break;
-                    case 2:
-                        a = (value & 1) ? 255 : 0;
-                        r = expand5((value >> 11) & 0x1f);
-                        g = expand5((value >> 6) & 0x1f);
-                        b = expand5((value >> 1) & 0x1f);
-                        break;
-                    case 3:
-                        r = expand5((value >> 11) & 0x1f);
-                        g = expand6((value >> 5) & 0x3f);
-                        b = expand5(value & 0x1f);
-                        break;
-                    case 4:
-                        a = expand4(value);
-                        b = expand4(value >> 4);
-                        g = expand4(value >> 8);
-                        r = expand4(value >> 12);
-                        break;
-                    case 5: {
-                        a = static_cast<std::uint8_t>(value & 0xff);
-                        const auto luminance = static_cast<std::uint8_t>((value >> 8) & 0xff);
-                        r = g = b = luminance;
-                        break;
+                    switch (format) {
+                        case 0: // RGBA8: bytes are R,G,B,A in CTR font/layout textures.
+                            r = b0; g = b1; b = b2; a = b3;
+                            break;
+                        case 1: // RGB8
+                            r = b0; g = b1; b = b2; a = 255;
+                            break;
+                        case 2: { // RGBA5551, packed MSB-first across the two bytes.
+                            r = expand5((b0 >> 3) & 0x1f);
+                            g = expand5(((b0 & 0x07) << 2) | ((b1 >> 6) & 0x03));
+                            b = expand5((b1 >> 1) & 0x1f);
+                            a = (b1 & 1) ? 255 : 0;
+                            break;
+                        }
+                        case 3: // RGB565
+                            r = expand5((b0 >> 3) & 0x1f);
+                            g = expand6(((b0 & 0x07) << 3) | ((b1 >> 5) & 0x07));
+                            b = expand5(b1 & 0x1f);
+                            a = 255;
+                            break;
+                        case 4: // RGBA4: R/A in first byte, B/G in second.
+                            r = expand4(b0 >> 4);
+                            a = expand4(b0);
+                            b = expand4(b1 >> 4);
+                            g = expand4(b1);
+                            break;
+                        case 5: // LA8: luminance then alpha.
+                            r = g = b = b0;
+                            a = b1;
+                            break;
+                        case 6: // HILO8: retain both channels deterministically.
+                            r = b0; g = b1; b = 0; a = 255;
+                            break;
+                        case 7: // L8
+                            r = g = b = b0; a = 255;
+                            break;
+                        case 8: // A8
+                            r = g = b = 255; a = b0;
+                            break;
+                        case 9: // LA4: high luminance, low alpha.
+                            r = g = b = expand4(b0 >> 4);
+                            a = expand4(b0);
+                            break;
+                        default:
+                            return {};
                     }
-                    case 6:
-                        r = static_cast<std::uint8_t>(value & 0xff);
-                        g = static_cast<std::uint8_t>((value >> 8) & 0xff);
-                        b = 0;
-                        break;
-                    case 7:
-                        r = g = b = static_cast<std::uint8_t>(value);
-                        break;
-                    case 8:
-                        r = g = b = 255;
-                        a = static_cast<std::uint8_t>(value);
-                        break;
-                    case 9:
-                        a = expand4(value);
-                        r = g = b = expand4(value >> 4);
-                        break;
-                    case 10:
-                        r = g = b = expand4(value);
-                        break;
-                    case 11:
-                        r = g = b = 255;
-                        a = expand4(value);
-                        break;
-                    default:
-                        break;
                 }
 
                 writeRgba(image.rgba,
@@ -183,11 +185,25 @@ int signExtend3(int value) {
     return value >= 4 ? value - 8 : value;
 }
 
+bool enoughEtcData(const std::vector<std::uint8_t>& data,
+                   std::size_t dataOffset,
+                   int width,
+                   int height,
+                   bool hasAlpha) {
+    const std::size_t tilesX = static_cast<std::size_t>((width + 7) / 8);
+    const std::size_t tilesY = static_cast<std::size_t>((height + 7) / 8);
+    const std::size_t blockSize = hasAlpha ? 16u : 8u;
+    const std::size_t bytes = tilesX * tilesY * 4u * blockSize;
+    return dataOffset <= data.size() && bytes <= data.size() - dataOffset;
+}
+
 Image decodeEtc(const std::vector<std::uint8_t>& data,
                 std::size_t dataOffset,
                 int width,
                 int height,
                 bool hasAlpha) {
+    if (!enoughEtcData(data, dataOffset, width, height, hasAlpha)) return {};
+
     Image image;
     image.width = width;
     image.height = height;
@@ -201,10 +217,9 @@ Image decodeEtc(const std::vector<std::uint8_t>& data,
             const std::size_t relative = static_cast<std::size_t>(
                 (((x >> 3) + (y >> 3) * tilesX) * 4 + ((x >> 2) & 1) + ((y >> 2) & 1) * 2) * blockSize);
             const std::size_t offset = dataOffset + relative;
-            if (offset + static_cast<std::size_t>(blockSize) > data.size()) continue;
 
-            const std::uint64_t alpha64 = hasAlpha ? u64(data, offset) : std::numeric_limits<std::uint64_t>::max();
-            const std::uint64_t rgb64 = u64(data, hasAlpha ? offset + 8 : offset);
+            const std::uint64_t alpha64 = hasAlpha ? u64le(data, offset) : std::numeric_limits<std::uint64_t>::max();
+            const std::uint64_t rgb64 = u64le(data, hasAlpha ? offset + 8 : offset);
             const int flip = static_cast<int>((rgb64 >> 32) & 1);
             const int differential = static_cast<int>((rgb64 >> 33) & 1);
 
