@@ -2,7 +2,7 @@
 
 #include "ctr/Bcfnt.h"
 #include "ctr/CtrTexture.h"
-#include "rom/RomModelArchive.h"
+#include "storage/RomAssetCache.h"
 
 #include <string>
 #include <vector>
@@ -11,7 +11,7 @@ namespace promptemon::demo {
 
 class RomUiSkin {
 public:
-    bool load(rom::RomModelArchive& archive);
+    bool load(storage::RomAssetCache& assets);
     void release();
 
     bool ready() const noexcept { return fontReady_ && buttonTexture_ != 0 && panelTexture_ != 0; }
