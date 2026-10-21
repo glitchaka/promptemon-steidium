@@ -1,4 +1,5 @@
 #include "rom/Lzh8.h"
+#include "rom/Lz11.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -66,12 +67,16 @@ std::uint32_t read32(const std::vector<std::uint8_t>& data, std::size_t offset) 
 } // namespace
 
 bool Lzh8::isCompressed(const std::vector<std::uint8_t>& data) noexcept {
-    return !data.empty() && data[0] == 0x40;
+    // This function is also the common Nintendo-compression probe used by the
+    // Rumble World archive indexer. Accept LZ11 here so .arc/.cx containers are
+    // decompressed before testing for DARC.
+    return (!data.empty() && data[0] == 0x40) || Lz11::isCompressed(data);
 }
 
 std::vector<std::uint8_t> Lzh8::decompress(const std::vector<std::uint8_t>& data) {
-    if (!isCompressed(data) || data.size() < 4) {
-        throw std::runtime_error("Not an LZH8 stream");
+    if (Lz11::isCompressed(data)) return Lz11::decompress(data);
+    if (data.empty() || data[0] != 0x40 || data.size() < 4) {
+        throw std::runtime_error("Not an LZH8/LZ11 stream");
     }
 
     std::size_t offset = 0;
