@@ -39,8 +39,21 @@ if exist build\CMakeCache.txt (
     )
 )
 
-cmake -S . -B build -G "%GENERATOR%" -A x64 || exit /b 1
+rem Windows, Explorer, Defender u otro proceso pueden conservar temporalmente un handle
+rem sobre un EXE anterior aun cuando el juego ya no esta abierto. Para que el linker nunca
+rem dependa de sobrescribir ese archivo, cada build usa un nombre de salida nuevo.
+set "BUILD_STAMP="
+for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss_fff"') do set "BUILD_STAMP=%%T"
+if not defined BUILD_STAMP set "BUILD_STAMP=%RANDOM%%RANDOM%"
+set "OUTPUT_BASENAME=promptemon_demo_!BUILD_STAMP!"
+
+rem Limpia ejecutables antiguos que no esten bloqueados. Los bloqueados se ignoran.
+if exist build\Release\promptemon_demo_*.exe del /q build\Release\promptemon_demo_*.exe >nul 2>nul
+
+cmake -S . -B build -G "%GENERATOR%" -A x64 -DPROMPTEMON_OUTPUT_BASENAME=!OUTPUT_BASENAME! || exit /b 1
 cmake --build build --config Release --target promptemon_demo || exit /b 1
 
+>build\Release\LATEST_PROMPTEMON.txt echo !OUTPUT_BASENAME!.exe
+
 echo.
-echo Listo: build\Release\promptemon_demo.exe
+echo Listo: build\Release\!OUTPUT_BASENAME!.exe
