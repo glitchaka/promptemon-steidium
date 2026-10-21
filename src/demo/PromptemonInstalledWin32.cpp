@@ -98,6 +98,13 @@ void dumpUiScan(const std::filesystem::path& bundle) {
     }
 }
 
+[[noreturn]] void fatalExit(int code) {
+    std::cout << "[PROCESO] Terminando proceso. Codigo " << code << '\n';
+    std::cout.flush();
+    FreeConsole();
+    ExitProcess(static_cast<UINT>(code));
+}
+
 bool registerInstalledGameWindowClass(HINSTANCE instance) {
     WNDCLASSW wc{};
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -141,7 +148,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
                     L"No se pudo abrir player.db junto al ejecutable.",
                     L"Promptemon Steidium", MB_OK | MB_ICONERROR);
         if (uninitializeOle) OleUninitialize();
-        return 1;
+        fatalExit(1);
     }
     std::cout << "[DB] OK\n";
     logPath("player.db", database.path());
@@ -160,7 +167,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
                     L"el subset necesario junto al juego; no necesitas seleccionar la ROM.",
                     L"Promptemon Steidium", MB_OK | MB_ICONWARNING);
         if (uninitializeOle) OleUninitialize();
-        return 1;
+        fatalExit(1);
     }
 
     const auto allResources = gAssets.resources();
@@ -176,14 +183,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
                     L"Vuelve a generar PromptemonResources.exe desde resources-tx.",
                     L"Bundle de recursos invalido", MB_OK | MB_ICONERROR);
         if (uninitializeOle) OleUninitialize();
-        return 1;
+        fatalExit(1);
     }
 
     std::cout << "[WIN32] Registrando ventana principal...\n";
     if (!registerInstalledGameWindowClass(instance)) {
         std::cout << "[ERROR] RegisterClassW fallo. GetLastError=" << GetLastError() << '\n';
         if (uninitializeOle) OleUninitialize();
-        return 1;
+        fatalExit(1);
     }
     std::cout << "[WIN32] OK\n";
 
@@ -192,17 +199,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     if (!window) {
         std::cout << "[ERROR] createInstalledGameWindow fallo. GetLastError=" << GetLastError() << '\n';
         dumpUiScan(bundle);
-        std::cout << "\n[DETENIDO] Revisa las lineas anteriores para identificar si fallo fuente, boton o panel.\n";
+        std::cout << "\n[DETENIDO] El renderizador fallo antes de crear la ventana.\n";
         MessageBoxW(nullptr,
-                    L"El bundle fue encontrado, pero faltan recursos necesarios para iniciar "
-                    L"el renderizador (UI, fuente o escena).\n"
+                    L"No se pudo iniciar el renderizador.\n"
                     L"Revisa el monitor de carga para ver el fallo exacto.",
-                    L"Recursos incompletos", MB_OK | MB_ICONERROR);
+                    L"Error de renderizado", MB_OK | MB_ICONERROR);
         if (uninitializeOle) OleUninitialize();
-        return 1;
+        fatalExit(1);
     }
 
-    std::cout << "[RENDER] OK - ventana y recursos inicializados.\n";
+    std::cout << "[RENDER] OK - ventana inicializada.\n";
+    if (!gRenderer.create) {
+        // unreachable; keeps diagnostics focused on the real renderer path.
+    }
     std::cout << "[JUEGO] Promptemon Steidium listo.\n\n";
 
     MSG message{};
@@ -212,6 +221,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     std::cout << "[SALIDA] Codigo " << static_cast<int>(message.wParam) << '\n';
+    std::cout.flush();
     if (uninitializeOle) OleUninitialize();
+    FreeConsole();
     return static_cast<int>(message.wParam);
 }
