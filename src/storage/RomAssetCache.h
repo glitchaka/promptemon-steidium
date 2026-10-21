@@ -21,6 +21,11 @@ public:
     bool prepare(rom::RomModelArchive& archive,
                  const std::filesystem::path& baseDirectory,
                  ProgressCallback progress = {});
+
+    // Opens the curated resource bundle produced from resources-tx.
+    // Expected layout: <directory>/files/romfs/... + bundle_manifest.tsv.
+    bool openInstalledDirectory(const std::filesystem::path& directory);
+
     void close();
 
     bool isOpen() const noexcept { return !root_.empty() && !files_.empty(); }

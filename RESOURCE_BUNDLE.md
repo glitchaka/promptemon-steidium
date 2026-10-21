@@ -1,6 +1,6 @@
 # Bundle local de recursos
 
-`resources-tx` es el dump completo. Promptemon no necesita copiarlo entero para el slice jugable actual.
+`resources-tx` sigue siendo el dump maestro. El juego no distribuye ni vuelve a leer sus ~10.000 archivos completos.
 
 ## Crear el autoextraible
 
@@ -22,16 +22,23 @@ El resultado es:
 build\Release\PromptemonResources.exe
 ```
 
-El EXE contiene unicamente los archivos que coinciden con `config/required_resources.txt`. Tambien elimina del payload la copia comprimida cuando ya fue seleccionada su version decodificada de `files/decoded`.
+El empaquetador inspecciona el dump y selecciona automaticamente lo que usa el slice actual:
 
-Al ejecutar `PromptemonResources.exe`, el bundle se extrae junto al ejecutable en:
+- los 8 Pokemon definidos por el juego y sus BCH de animacion compartida;
+- una escena BCH real y utilizable para el Hub, priorizando `stage/town1`;
+- la familia de archivos de esa escena;
+- una fuente BCFNT que realmente decodifica;
+- los recursos que realmente decodifican como panel/boton de UI;
+- un efecto BCH utilizable para el feedback de combate, si existe.
+
+Los archivos LZH8/LZ11 seleccionados se guardan ya descomprimidos dentro del bundle. La ROM cruda, los otros Pokemon, idiomas/UI no elegidos, escenarios ajenos y el resto del dump no entran en el EXE.
+
+Al ejecutar `PromptemonResources.exe`, se instala el subset junto al ejecutable en:
 
 ```text
 assets\resources-tx\
 ```
 
-El autoextraible se genera localmente: ni el dump ni sus recursos se agregan al repositorio de codigo.
+`promptemon_demo.exe` consume directamente ese bundle instalado. En el flujo normal ya no pide seleccionar una ROM ni vuelve a extraer el dump.
 
-## Mantener el subset
-
-`config/required_resources.txt` es la fuente de verdad. Cuando el juego empiece a usar otra especie, escenario, UI o familia de efectos, se agrega una regla y se vuelve a generar el autoextraible. Las reglas disponibles son `prefix=`, `contains=`, `suffix=` y `basename=`; todas son case-insensitive.
+El autoextraible se genera localmente; ni el dump ni sus recursos se agregan al repositorio de codigo.

@@ -1,15 +1,21 @@
+#include "bch/BchScene.h"
+#include "ctr/Bcfnt.h"
+#include "ctr/Bclim.h"
+#include "rom/Lz11.h"
+#include "rom/Lzh8.h"
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <optional>
+#include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -17,67 +23,26 @@ namespace {
 constexpr char kPackageMagic[8] = {'P','M','P','K','G','0','0','1'};
 constexpr char kSfxMagic[8] = {'P','M','S','F','X','0','0','1'};
 
-struct Rule {
-    enum class Kind { Prefix, Contains, Suffix, Basename };
-    Kind kind = Kind::Contains;
-    std::string value;
+struct SourceFile {
+    std::filesystem::path absolute;
+    std::string virtualPath;
+    std::string lowerPath;
 };
 
-struct FileEntry {
-    std::string packagePath;
-    std::filesystem::path source;
-    std::uint64_t size = 0;
+struct RankedFile {
+    int score = std::numeric_limits<int>::min();
+    std::size_t index = 0;
 };
 
-std::string trim(std::string value) {
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) value.erase(value.begin());
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
-    return value;
-}
-
-std::string normalize(std::string value) {
-    std::replace(value.begin(), value.end(), '\\', '/');
-    while (value.rfind("./", 0) == 0) value.erase(0, 2);
+std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
     return value;
 }
 
-std::vector<Rule> loadRules(const std::filesystem::path& file) {
-    std::ifstream input(file, std::ios::binary);
-    if (!input) throw std::runtime_error("No se pudo abrir la lista de recursos: " + file.string());
-
-    std::vector<Rule> rules;
-    std::string line;
-    std::size_t lineNumber = 0;
-    while (std::getline(input, line)) {
-        ++lineNumber;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        line = trim(line);
-        if (line.empty() || line.front() == '#') continue;
-
-        const auto split = line.find('=');
-        if (split == std::string::npos) {
-            throw std::runtime_error("Regla invalida en linea " + std::to_string(lineNumber));
-        }
-
-        const std::string key = normalize(trim(line.substr(0, split)));
-        const std::string value = normalize(trim(line.substr(split + 1)));
-        if (value.empty()) throw std::runtime_error("Regla vacia en linea " + std::to_string(lineNumber));
-
-        Rule rule;
-        if (key == "prefix") rule.kind = Rule::Kind::Prefix;
-        else if (key == "contains") rule.kind = Rule::Kind::Contains;
-        else if (key == "suffix") rule.kind = Rule::Kind::Suffix;
-        else if (key == "basename") rule.kind = Rule::Kind::Basename;
-        else throw std::runtime_error("Tipo de regla desconocido en linea " + std::to_string(lineNumber) + ": " + key);
-        rule.value = value;
-        rules.push_back(std::move(rule));
-    }
-
-    if (rules.empty()) throw std::runtime_error("La lista de recursos no contiene reglas");
-    return rules;
+bool contains(const std::string& value, const char* token) {
+    return value.find(token) != std::string::npos;
 }
 
 bool endsWith(const std::string& value, const std::string& suffix) {
@@ -85,207 +50,405 @@ bool endsWith(const std::string& value, const std::string& suffix) {
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-bool matches(const std::string& relativePath, const std::vector<Rule>& rules) {
-    const std::string path = normalize(relativePath);
-    const auto slash = path.find_last_of('/');
-    const std::string basename = slash == std::string::npos ? path : path.substr(slash + 1);
-
-    for (const auto& rule : rules) {
-        switch (rule.kind) {
-            case Rule::Kind::Prefix:
-                if (path.rfind(rule.value, 0) == 0) return true;
-                break;
-            case Rule::Kind::Contains:
-                if (path.find(rule.value) != std::string::npos) return true;
-                break;
-            case Rule::Kind::Suffix:
-                if (endsWith(path, rule.value)) return true;
-                break;
-            case Rule::Kind::Basename:
-                if (basename == rule.value) return true;
-                break;
-        }
-    }
-    return false;
+bool looksLikeBchPath(const std::string& p) {
+    return endsWith(p, ".bch") || endsWith(p, ".bch.cx") || endsWith(p, ".bch.xc");
 }
 
-std::optional<std::string> decodedEquivalent(const std::string& relativePath) {
-    std::string path = normalize(relativePath);
-    constexpr const char* filesPrefix = "files/";
-    constexpr const char* decodedPrefix = "files/decoded/";
-    if (path.rfind(decodedPrefix, 0) == 0 || path.rfind(filesPrefix, 0) != 0) return std::nullopt;
+bool looksLikeUiPath(const std::string& p) {
+    return contains(p, "ui/") || contains(p, "font") || contains(p, "common") ||
+           contains(p, "menu") || contains(p, "button") || contains(p, "btn") ||
+           contains(p, "window") || contains(p, "waku") || contains(p, "frame") ||
+           contains(p, "panel") || contains(p, "message");
+}
 
-    std::string tail = path.substr(std::char_traits<char>::length(filesPrefix));
-    if (endsWith(tail, ".cx") || endsWith(tail, ".xc")) {
-        tail.resize(tail.size() - 3);
-        return std::string(decodedPrefix) + tail;
+std::vector<std::uint8_t> readFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("No se pudo abrir: " + path.string());
+    in.seekg(0, std::ios::end);
+    const auto end = in.tellg();
+    if (end < 0) throw std::runtime_error("No se pudo medir: " + path.string());
+    in.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(end));
+    if (!data.empty()) in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    if (!in && !data.empty()) throw std::runtime_error("No se pudo leer: " + path.string());
+    return data;
+}
+
+std::vector<std::uint8_t> decodeKnown(std::vector<std::uint8_t> data) {
+    for (unsigned pass = 0; pass < 4; ++pass) {
+        if (promptemon::rom::Lzh8::isCompressed(data)) {
+            data = promptemon::rom::Lzh8::decompress(data);
+            continue;
+        }
+        if (promptemon::rom::Lz11::isCompressed(data)) {
+            data = promptemon::rom::Lz11::decompress(data);
+            continue;
+        }
+        break;
     }
-    return std::nullopt;
+    return data;
+}
+
+bool bchMagic(const std::vector<std::uint8_t>& data) {
+    return data.size() >= 4 && data[0] == 'B' && data[1] == 'C' && data[2] == 'H' && data[3] == 0;
+}
+
+std::filesystem::path resolveRomFs(const std::filesystem::path& input) {
+    std::error_code ec;
+    const auto candidate = input / "files" / "romfs";
+    if (std::filesystem::is_directory(candidate, ec) && !ec) return candidate;
+    ec.clear();
+    if (std::filesystem::is_directory(input, ec) && !ec && lower(input.filename().string()) == "romfs") return input;
+    throw std::runtime_error("No se encontro files/romfs dentro de resources-tx");
+}
+
+std::vector<SourceFile> scanRomFs(const std::filesystem::path& romfs) {
+    std::vector<SourceFile> out;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(romfs, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+        const auto relative = std::filesystem::relative(it->path(), romfs, ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const std::string virtualPath = relative.generic_u8string();
+        if (!virtualPath.empty()) out.push_back({it->path(), virtualPath, lower(virtualPath)});
+    }
+    if (ec) throw std::runtime_error("No se pudo recorrer files/romfs: " + ec.message());
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return a.virtualPath < b.virtualPath;
+    });
+    return out;
+}
+
+int stageScore(const std::string& p) {
+    if (contains(p, "pii/") || contains(p, "mii/") || contains(p, "ui/") ||
+        contains(p, "icon") || contains(p, "font") || contains(p, "menu") ||
+        contains(p, "effect") || contains(p, "/eff")) return -100000;
+    int score = 0;
+    if (contains(p, "stage/town1/ground_96")) score += 50000;
+    if (contains(p, "stage/town1/rep_01")) score += 40000;
+    if (contains(p, "stage/town1/")) score += 8000;
+    if (contains(p, "stage/")) score += 1200;
+    if (contains(p, "town")) score += 700;
+    if (contains(p, "ground")) score += 500;
+    if (contains(p, "field") || contains(p, "course") || contains(p, "area")) score += 300;
+    if (contains(p, "castle") || contains(p, "forest") || contains(p, "plain")) score += 180;
+    return score;
+}
+
+int effectScore(const std::string& p) {
+    if (contains(p, "pii/") || contains(p, "mii/") || contains(p, "ui/")) return -100000;
+    int score = 0;
+    if (contains(p, "effect")) score += 1000;
+    if (contains(p, "/eff") || contains(p, "eff_")) score += 850;
+    if (contains(p, "hit") || contains(p, "impact")) score += 600;
+    if (contains(p, "spark") || contains(p, "flash")) score += 450;
+    if (contains(p, "waza") || contains(p, "attack")) score += 300;
+    return score;
+}
+
+int fontScore(const std::string& p) {
+    int score = 0;
+    if (contains(p, ".bcfnt")) score += 500;
+    if (contains(p, ".cfnt")) score += 420;
+    if (contains(p, "standard")) score += 300;
+    if (contains(p, "font")) score += 250;
+    if (contains(p, "common")) score += 80;
+    if (contains(p, "message") || contains(p, "text")) score += 60;
+    if (contains(p, "debug")) score -= 300;
+    return score;
+}
+
+int buttonScore(const std::string& p, int width, int height) {
+    int score = 0;
+    if (contains(p, "button")) score += 420;
+    if (contains(p, "btn")) score += 380;
+    if (contains(p, "select")) score += 150;
+    if (contains(p, "menu")) score += 120;
+    if (contains(p, "common")) score += 80;
+    if (contains(p, "waku") || contains(p, "frame")) score += 50;
+    if (contains(p, "ui/")) score += 180;
+    if (contains(p, "icon") || contains(p, "logo") || contains(p, "title") || contains(p, "face")) score -= 250;
+    if (contains(p, "bg") || contains(p, "background")) score -= 160;
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
+    if (aspect >= 1.8f && aspect <= 12.0f) score += 180; else score -= 120;
+    if (width >= 48 && width <= 1024) score += 45;
+    if (height >= 12 && height <= 180) score += 70;
+    if (height > width) score -= 140;
+    return score;
+}
+
+int panelScore(const std::string& p, int width, int height) {
+    int score = 0;
+    if (contains(p, "window")) score += 420;
+    if (contains(p, "waku")) score += 360;
+    if (contains(p, "frame")) score += 300;
+    if (contains(p, "panel")) score += 280;
+    if (contains(p, "message")) score += 180;
+    if (contains(p, "common")) score += 100;
+    if (contains(p, "ui/")) score += 180;
+    if (contains(p, "button") || contains(p, "btn")) score += 30;
+    if (contains(p, "icon") || contains(p, "logo") || contains(p, "title") || contains(p, "face")) score -= 250;
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
+    if (aspect >= 0.7f && aspect <= 8.0f) score += 80;
+    if (width >= 64 && height >= 32) score += 70;
+    if (width > 2048 || height > 2048) score -= 160;
+    return score;
+}
+
+bool usableBch(const SourceFile& file) {
+    try {
+        const auto bytes = decodeKnown(readFile(file.absolute));
+        if (!bchMagic(bytes)) return false;
+        const auto scene = promptemon::bch::Scene::parse(bytes);
+        return !scene.meshes().empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+std::size_t chooseRankedBch(const std::vector<SourceFile>& files,
+                            int (*scoreFn)(const std::string&),
+                            bool required) {
+    std::vector<RankedFile> ranked;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        if (!looksLikeBchPath(files[i].lowerPath)) continue;
+        const int score = scoreFn(files[i].lowerPath);
+        if (score > 0) ranked.push_back({score, i});
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        return a.score > b.score;
+    });
+    const std::size_t limit = std::min<std::size_t>(ranked.size(), 96);
+    for (std::size_t i = 0; i < limit; ++i) {
+        if (usableBch(files[ranked[i].index])) return ranked[i].index;
+    }
+    if (required) throw std::runtime_error("No se encontro una escena BCH utilizable para el Hub");
+    return files.size();
 }
 
 void writeU32(std::ostream& out, std::uint32_t value) {
     const char b[4] = {
-        static_cast<char>(value & 0xFFu),
-        static_cast<char>((value >> 8) & 0xFFu),
-        static_cast<char>((value >> 16) & 0xFFu),
-        static_cast<char>((value >> 24) & 0xFFu)
+        static_cast<char>(value & 0xffu),
+        static_cast<char>((value >> 8) & 0xffu),
+        static_cast<char>((value >> 16) & 0xffu),
+        static_cast<char>((value >> 24) & 0xffu)
     };
     out.write(b, 4);
 }
 
 void writeU64(std::ostream& out, std::uint64_t value) {
     char b[8]{};
-    for (unsigned i = 0; i < 8; ++i) b[i] = static_cast<char>((value >> (8u * i)) & 0xFFu);
+    for (unsigned i = 0; i < 8; ++i) b[i] = static_cast<char>((value >> (8u * i)) & 0xffu);
     out.write(b, 8);
 }
 
-void copyStream(std::istream& in, std::ostream& out, std::uint64_t bytes) {
+void copyStream(std::istream& in, std::ostream& out) {
     std::vector<char> buffer(1024 * 1024);
-    while (bytes > 0) {
-        const auto chunk = static_cast<std::streamsize>(std::min<std::uint64_t>(bytes, buffer.size()));
-        in.read(buffer.data(), chunk);
-        if (in.gcount() != chunk) throw std::runtime_error("Lectura incompleta al construir el paquete");
-        out.write(buffer.data(), chunk);
-        if (!out) throw std::runtime_error("Escritura incompleta al construir el paquete");
-        bytes -= static_cast<std::uint64_t>(chunk);
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto got = in.gcount();
+        if (got > 0) out.write(buffer.data(), got);
     }
 }
 
-void writeEntryHeader(std::ostream& out, const std::string& path, std::uint64_t size) {
-    if (path.empty() || path.size() > 0xFFFFFFFFull) throw std::runtime_error("Ruta invalida en el paquete");
+void writeEntry(std::ostream& out, const std::string& path, const std::vector<std::uint8_t>& bytes) {
+    if (path.empty() || path.size() > 0xffffffffu) throw std::runtime_error("Ruta invalida en el paquete");
     writeU32(out, static_cast<std::uint32_t>(path.size()));
-    writeU64(out, size);
+    writeU64(out, static_cast<std::uint64_t>(bytes.size()));
     out.write(path.data(), static_cast<std::streamsize>(path.size()));
-}
-
-std::string buildManifest(const std::vector<FileEntry>& files) {
-    std::ostringstream out;
-    out << "# promptemon-resource-bundle-v1\n";
-    out << "# files\t" << files.size() << "\n";
-    out << "path\tsize\n";
-    for (const auto& file : files) out << file.packagePath << '\t' << file.size << '\n';
-    return out.str();
+    if (!bytes.empty()) out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!out) throw std::runtime_error("No se pudo escribir el paquete");
 }
 
 void buildSelfExtractor(const std::filesystem::path& stub,
                         const std::filesystem::path& output,
-                        const std::vector<FileEntry>& files) {
+                        const std::vector<SourceFile>& files,
+                        const std::set<std::size_t>& selected) {
     std::ifstream stubIn(stub, std::ios::binary);
     if (!stubIn) throw std::runtime_error("No se pudo abrir el stub autoextraible: " + stub.string());
-
     std::filesystem::create_directories(output.parent_path());
     std::ofstream out(output, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("No se pudo crear: " + output.string());
 
-    stubIn.seekg(0, std::ios::end);
-    const auto stubLength = stubIn.tellg();
-    if (stubLength < 0) throw std::runtime_error("No se pudo medir el stub autoextraible");
-    stubIn.seekg(0, std::ios::beg);
-    copyStream(stubIn, out, static_cast<std::uint64_t>(stubLength));
-
-    const std::streampos packagePosition = out.tellp();
+    copyStream(stubIn, out);
+    const auto packagePosition = out.tellp();
     if (packagePosition < std::streampos(0)) throw std::runtime_error("No se pudo determinar el offset del paquete");
     const auto packageOffset = static_cast<std::uint64_t>(static_cast<std::streamoff>(packagePosition));
 
-    const std::string manifest = buildManifest(files);
-    out.write(kPackageMagic, sizeof(kPackageMagic));
+    out.write(kPackageMagic, 8);
     writeU32(out, 1);
-    writeU32(out, static_cast<std::uint32_t>(files.size() + 1));
+    writeU32(out, static_cast<std::uint32_t>(selected.size() + 1));
 
-    for (std::size_t i = 0; i < files.size(); ++i) {
-        const auto& file = files[i];
-        std::cout << '[' << (i + 1) << '/' << files.size() << "] " << file.packagePath << '\n';
-        writeEntryHeader(out, file.packagePath, file.size);
-        std::ifstream in(file.source, std::ios::binary);
-        if (!in) throw std::runtime_error("No se pudo abrir recurso: " + file.source.string());
-        copyStream(in, out, file.size);
+    std::ostringstream manifest;
+    manifest << "# promptemon-resource-bundle-v1\n";
+    manifest << "# selected\t" << selected.size() << "\n";
+    manifest << "path\tsize\n";
+
+    std::size_t done = 0;
+    for (std::size_t index : selected) {
+        auto bytes = decodeKnown(readFile(files[index].absolute));
+        const std::string packagePath = "files/romfs/" + files[index].virtualPath;
+        writeEntry(out, packagePath, bytes);
+        manifest << packagePath << '\t' << bytes.size() << '\n';
+        ++done;
+        std::cout << '[' << done << '/' << selected.size() << "] " << files[index].virtualPath << '\n';
     }
 
-    writeEntryHeader(out, "bundle_manifest.tsv", static_cast<std::uint64_t>(manifest.size()));
-    out.write(manifest.data(), static_cast<std::streamsize>(manifest.size()));
-    out.write(kSfxMagic, sizeof(kSfxMagic));
+    const std::string manifestText = manifest.str();
+    const std::vector<std::uint8_t> manifestBytes(manifestText.begin(), manifestText.end());
+    writeEntry(out, "bundle_manifest.tsv", manifestBytes);
+
+    out.write(kSfxMagic, 8);
     writeU64(out, packageOffset);
-    if (!out) throw std::runtime_error("Fallo al finalizar el autoextraible");
+    if (!out) throw std::runtime_error("No se pudo finalizar el autoextraible");
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 5) {
-            std::cerr
-                << "Uso: promptemon_resource_packager <resources-tx> <required_resources.txt> "
-                   "<promptemon_resource_sfx.exe> <salida.exe>\n";
+        if (argc != 4) {
+            std::cerr << "Uso: promptemon_resource_packager <resources-tx> <promptemon_resource_sfx.exe> <salida.exe>\n";
             return 2;
         }
 
-        const std::filesystem::path resourcesRoot = std::filesystem::u8path(argv[1]);
-        const std::filesystem::path rulesFile = std::filesystem::u8path(argv[2]);
-        const std::filesystem::path stub = std::filesystem::u8path(argv[3]);
-        const std::filesystem::path output = std::filesystem::u8path(argv[4]);
+        const std::filesystem::path resourcesRepo = std::filesystem::u8path(argv[1]);
+        const std::filesystem::path stub = std::filesystem::u8path(argv[2]);
+        const std::filesystem::path output = std::filesystem::u8path(argv[3]);
+        const auto romfs = resolveRomFs(resourcesRepo);
+        const auto files = scanRomFs(romfs);
+        if (files.empty()) throw std::runtime_error("resources-tx no contiene archivos en files/romfs");
 
-        std::error_code ec;
-        if (!std::filesystem::is_directory(resourcesRoot / "files", ec) || ec) {
-            throw std::runtime_error("La ruta no parece ser resources-tx: falta la carpeta files");
-        }
-        if (!std::filesystem::is_regular_file(stub, ec) || ec) {
-            throw std::runtime_error("No existe el stub autoextraible: " + stub.string());
-        }
+        std::set<std::size_t> selected;
+        auto select = [&](std::size_t index) {
+            if (index < files.size()) selected.insert(index);
+        };
 
-        const auto rules = loadRules(rulesFile);
-        std::vector<FileEntry> selected;
-        std::unordered_set<std::string> selectedPaths;
+        const std::array<std::vector<std::string>, 8> speciesKeys = {{
+            {"koratta", "rattata"},
+            {"poppo", "pidgey"},
+            {"kyatapi", "caterpie"},
+            {"biidoru", "weedle"},
+            {"zubatto", "zubat"},
+            {"ishitsubute", "isitubute", "geodude"},
+            {"goosu", "gosu", "ghos", "gastly"},
+            {"wanrikii", "machop"}
+        }};
 
-        for (std::filesystem::recursive_directory_iterator it(resourcesRoot, ec), end;
-             it != end; it.increment(ec)) {
-            if (ec) {
-                ec.clear();
-                continue;
+        for (const auto& keys : speciesKeys) {
+            bool found = false;
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                const auto& p = files[i].lowerPath;
+                if (p.rfind("pii/", 0) != 0 || !looksLikeBchPath(p)) continue;
+                for (const auto& key : keys) {
+                    if (p.find(key) != std::string::npos) {
+                        select(i);
+                        found = true;
+                        break;
+                    }
+                }
             }
-            if (!it->is_regular_file(ec) || ec) {
-                ec.clear();
-                continue;
-            }
-
-            const auto relative = std::filesystem::relative(it->path(), resourcesRoot, ec);
-            if (ec) {
-                ec.clear();
-                continue;
-            }
-            const std::string relativeText = relative.generic_u8string();
-            if (!matches(relativeText, rules)) continue;
-
-            const std::uint64_t size = static_cast<std::uint64_t>(it->file_size(ec));
-            if (ec) {
-                ec.clear();
-                continue;
-            }
-            selected.push_back({relativeText, it->path(), size});
-            selectedPaths.insert(normalize(relativeText));
+            if (!found) throw std::runtime_error("Falta un modelo Pokemon requerido: " + keys.front());
         }
 
-        if (selected.empty()) throw std::runtime_error("Ningun recurso de resources-tx coincide con las reglas");
-
-        std::vector<FileEntry> filtered;
-        filtered.reserve(selected.size());
-        for (auto& file : selected) {
-            if (const auto decoded = decodedEquivalent(file.packagePath);
-                decoded && selectedPaths.find(*decoded) != selectedPaths.end()) {
-                continue;
-            }
-            filtered.push_back(std::move(file));
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            const auto& p = files[i].lowerPath;
+            if (p.rfind("pii/", 0) == 0 && looksLikeBchPath(p) && contains(p, "anim")) select(i);
         }
 
-        std::sort(filtered.begin(), filtered.end(), [](const FileEntry& a, const FileEntry& b) {
-            return normalize(a.packagePath) < normalize(b.packagePath);
-        });
+        const std::size_t stageIndex = chooseRankedBch(files, stageScore, true);
+        select(stageIndex);
+        const std::string stageParent = lower(std::filesystem::path(files[stageIndex].virtualPath).parent_path().generic_u8string());
+        if (!stageParent.empty()) {
+            const std::string prefix = stageParent + "/";
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                if (files[i].lowerPath.rfind(prefix, 0) == 0) select(i);
+            }
+        }
 
-        std::uint64_t totalBytes = 0;
-        for (const auto& file : filtered) totalBytes += file.size;
+        const std::size_t effectIndex = chooseRankedBch(files, effectScore, false);
+        if (effectIndex < files.size()) {
+            select(effectIndex);
+            const std::string parent = lower(std::filesystem::path(files[effectIndex].virtualPath).parent_path().generic_u8string());
+            if (!parent.empty()) {
+                for (std::size_t i = 0; i < files.size(); ++i) {
+                    const auto& p = files[i].lowerPath;
+                    if (p.rfind(parent + "/", 0) == 0 && looksLikeBchPath(p) && contains(p, "anim")) select(i);
+                }
+            }
+        }
 
-        std::cout << "Seleccionados: " << filtered.size() << " archivos de resources-tx\n";
-        std::cout << "Payload: " << (totalBytes / (1024.0 * 1024.0)) << " MiB\n";
-        buildSelfExtractor(stub, output, filtered);
+        RankedFile bestFont;
+        RankedFile bestButton;
+        RankedFile bestPanel;
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            const auto& file = files[i];
+            if (!looksLikeUiPath(file.lowerPath)) continue;
+            const bool candidate = contains(file.lowerPath, ".bcfnt") || contains(file.lowerPath, ".cfnt") ||
+                                   contains(file.lowerPath, ".bclim") || contains(file.lowerPath, ".clim") ||
+                                   looksLikeBchPath(file.lowerPath);
+            if (!candidate) continue;
+
+            try {
+                const auto bytes = decodeKnown(readFile(file.absolute));
+                if (promptemon::ctr::isBcfnt(bytes)) {
+                    const auto font = promptemon::ctr::decodeBcfnt(bytes);
+                    if (font.valid()) {
+                        const int score = fontScore(file.lowerPath);
+                        if (score > bestFont.score) bestFont = {score, i};
+                    }
+                }
+
+                if (promptemon::ctr::isBclim(bytes)) {
+                    const auto image = promptemon::ctr::decodeBclim(bytes);
+                    if (image.valid()) {
+                        const int bs = buttonScore(file.lowerPath, image.width, image.height);
+                        const int ps = panelScore(file.lowerPath, image.width, image.height);
+                        if (bs > bestButton.score) bestButton = {bs, i};
+                        if (ps > bestPanel.score) bestPanel = {ps, i};
+                    }
+                } else if (bchMagic(bytes) && looksLikeBchPath(file.lowerPath)) {
+                    const auto scene = promptemon::bch::Scene::parse(bytes);
+                    for (const auto& texture : scene.textures()) {
+                        if (texture.width <= 0 || texture.height <= 0 || texture.rgba.empty()) continue;
+                        const std::string scorePath = file.lowerPath + "/" + lower(texture.name);
+                        const int bs = buttonScore(scorePath, texture.width, texture.height);
+                        const int ps = panelScore(scorePath, texture.width, texture.height);
+                        if (bs > bestButton.score) bestButton = {bs, i};
+                        if (ps > bestPanel.score) bestPanel = {ps, i};
+                    }
+                }
+            } catch (...) {
+            }
+        }
+
+        if (bestFont.score == std::numeric_limits<int>::min())
+            throw std::runtime_error("No se encontro una fuente BCFNT utilizable");
+        if (bestButton.score == std::numeric_limits<int>::min())
+            throw std::runtime_error("No se encontro un recurso de boton utilizable");
+        if (bestPanel.score == std::numeric_limits<int>::min())
+            throw std::runtime_error("No se encontro un recurso de panel utilizable");
+
+        select(bestFont.index);
+        select(bestButton.index);
+        select(bestPanel.index);
+
+        std::cout << "resources-tx: " << resourcesRepo << '\n';
+        std::cout << "Hub: " << files[stageIndex].virtualPath << '\n';
+        std::cout << "Fuente: " << files[bestFont.index].virtualPath << '\n';
+        std::cout << "Boton: " << files[bestButton.index].virtualPath << '\n';
+        std::cout << "Panel: " << files[bestPanel.index].virtualPath << '\n';
+        if (effectIndex < files.size()) std::cout << "Efecto: " << files[effectIndex].virtualPath << '\n';
+        std::cout << "Recursos seleccionados: " << selected.size() << " de " << files.size() << '\n';
+
+        buildSelfExtractor(stub, output, files, selected);
         std::cout << "Autoextraible creado: " << output << '\n';
         return 0;
     } catch (const std::exception& e) {

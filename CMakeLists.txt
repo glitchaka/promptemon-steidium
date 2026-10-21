@@ -45,6 +45,7 @@ target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 add_executable(promptemon_resource_packager
     tools/promptemon_resource_packager.cpp
 )
+target_link_libraries(promptemon_resource_packager PRIVATE promptemon_rom promptemon_bch)
 
 add_executable(promptemon_resource_sfx
     tools/promptemon_resource_sfx.cpp
@@ -57,12 +58,12 @@ endif()
 
 if(WIN32)
     add_executable(promptemon_demo WIN32
-        src/demo/PromptemonGameBootstrapWin32.cpp
+        src/demo/PromptemonInstalledWin32.cpp
         src/demo/PrototypeRomRendererCache.cpp
         src/demo/RomUiSkin.cpp
-        src/demo/ExtractionProgressWindow.cpp
         src/storage/LocalDatabase.cpp
         src/storage/RomAssetCache.cpp
+        src/storage/RomAssetCacheInstalled.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
     if(MSVC)
