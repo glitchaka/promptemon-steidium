@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace promptemon::demo {
@@ -56,8 +57,8 @@ public:
     void move(int x, int y, int width, int height);
     void tick();
 
-    void setStageModel(const std::string& modelPath);
-    void setEffectModel(const std::string& modelPath);
+    bool setStageModel(const std::string& modelPath);
+    bool setEffectModel(const std::string& modelPath);
 
     void showMainMenu();
     void showIntro();
