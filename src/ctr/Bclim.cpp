@@ -44,7 +44,6 @@ std::uint32_t u32be(const std::vector<std::uint8_t>& data, std::size_t offset) {
 }
 
 int bflimToCtrFormat(int format) {
-    // BFLIM uses a different enum from the CTR texture decoder.
     switch (format) {
         case 0x00: return 7;  // L8
         case 0x01: return 8;  // A8
@@ -60,7 +59,7 @@ int bflimToCtrFormat(int format) {
         case 0x0B: return 13; // ETC1A4
         case 0x0C: return 10; // L4
         case 0x0D: return 11; // A4
-        case 0x13: return 12; // alternate ETC1 id seen in BFLIM
+        case 0x13: return 12; // alternate ETC1 id
         default: return -1;
     }
 }
@@ -118,26 +117,27 @@ Image decodeBclim(const std::vector<std::uint8_t>& data) {
     const std::uint32_t imagSize = read32(imag + 0x04);
     if (imagSize < 0x10 || imag + imagSize > data.size()) return {};
 
-    const int width = static_cast<int>(read16(imag + 0x08));
-    const int height = static_cast<int>(read16(imag + 0x0A));
-    if (width <= 0 || height <= 0) return {};
-
+    int width = 0;
+    int height = 0;
     int format = -1;
     std::uint32_t declaredImageSize = static_cast<std::uint32_t>(clim);
 
     if (footer.flim) {
-        // BFLIM layout: alignment at 0x0C, format byte at 0x0E,
-        // swizzle byte at 0x0F, raw texture size at 0x10.
+        // 3DS BFLIM imag is 4s I H(height) H(width) H(alignment) B(format) B(swizzle) I(dataSize).
         if (imagSize < 0x14 || imag + 0x14 > data.size()) return {};
+        height = static_cast<int>(read16(imag + 0x08));
+        width = static_cast<int>(read16(imag + 0x0A));
         format = bflimToCtrFormat(static_cast<int>(data[imag + 0x0E]));
         declaredImageSize = read32(imag + 0x10);
     } else {
-        // BCLIM layout stores the CTR format directly at 0x0C.
+        // BCLIM imag stores width then height and uses the CTR texture enum directly.
+        width = static_cast<int>(read16(imag + 0x08));
+        height = static_cast<int>(read16(imag + 0x0A));
         format = static_cast<int>(read32(imag + 0x0C) & 0x0F);
         if (imagSize >= 0x14) declaredImageSize = read32(imag + 0x10);
     }
 
-    if (format < 0 || format > 13) return {};
+    if (width <= 0 || height <= 0 || format < 0 || format > 13) return {};
 
     std::size_t imageOffset = 0;
     if (declaredImageSize != 0 && declaredImageSize <= clim) imageOffset = clim - declaredImageSize;
