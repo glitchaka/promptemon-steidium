@@ -26,13 +26,28 @@ public:
     void show(bool visible);
     void move(int x, int y, int width, int height);
 
-    bool setSingleModel(const std::string& modelPath);
-    bool setBattleModels(const std::string& playerModelPath, const std::string& wildModelPath);
+    bool setSingleModel(const std::string& modelPath, bool shiny = false);
+    bool setBattleModels(const std::string& playerModelPath,
+                         const std::string& wildModelPath,
+                         bool wildShiny = false);
+    bool setStarterModels(const std::string& leftModelPath,
+                          const std::string& centerModelPath,
+                          const std::string& rightModelPath);
+
+    void playPlayerAction();
+    void playWildAction();
     void clearModels();
     void tick();
 
 private:
+    enum class Layout {
+        Single,
+        Battle,
+        Starters
+    };
+
     struct Visual {
+        std::string modelPath;
         std::unique_ptr<bch::Scene> scene;
         const bch::Animation* idle = nullptr;
         const bch::Animation* current = nullptr;
@@ -46,13 +61,18 @@ private:
 
     bool initializeOpenGL();
     void shutdownOpenGL();
+    bool ensureVisual(Visual& target, const std::string& modelPath);
     bool loadVisual(Visual& target, const std::string& modelPath);
     void releaseVisual(Visual& target);
     void uploadTextures(Visual& target);
     void updateBounds(Visual& target);
     std::vector<std::uint8_t> animationForModel(const std::string& modelPath) const;
+    const bch::Animation* firstAction(Visual& visual) const;
 
     void render();
+    void drawBackdrop();
+    void drawShadow(float x, float y, float z, float radiusX, float radiusY);
+    void drawSparkles(float x, float y, float z, float phase);
     void drawVisual(Visual& visual, float x, float y, float z, float scale, float yawDegrees);
     void setupProjection(int width, int height);
 
@@ -60,9 +80,14 @@ private:
     HDC dc_ = nullptr;
     HGLRC gl_ = nullptr;
     rom::RomModelArchive* archive_ = nullptr;
+
     Visual player_;
     Visual wild_;
-    bool battleMode_ = false;
+    Visual third_;
+    Layout layout_ = Layout::Single;
+    bool singleShiny_ = false;
+    bool wildShiny_ = false;
+    float elapsedSeconds_ = 0.0f;
     std::chrono::steady_clock::time_point lastTick_{};
 };
 
