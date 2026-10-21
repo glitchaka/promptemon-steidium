@@ -94,10 +94,12 @@ bool LocalDatabase::open() {
     std::filesystem::create_directories(path_.parent_path(), ec);
     if (ec) return false;
 
-    if (open16_(path_.c_str(), &db_) != SQLITE_OK_VALUE || !db_) {
-        db_ = nullptr;
+    sqlite3* opened = nullptr;
+    if (open16_(path_.c_str(), &opened) != SQLITE_OK_VALUE || !opened) {
+        if (opened && close_) close_(opened);
         return false;
     }
+    db_ = opened;
 
     return exec(
         "CREATE TABLE IF NOT EXISTS settings ("
