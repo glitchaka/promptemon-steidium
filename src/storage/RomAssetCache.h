@@ -12,6 +12,13 @@
 
 namespace promptemon::storage {
 
+inline std::string lowerAscii(std::string value) {
+    for (char& c : value) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return value;
+}
+
 class RomAssetCache {
 public:
     using ProgressCallback = std::function<void(std::size_t current,
