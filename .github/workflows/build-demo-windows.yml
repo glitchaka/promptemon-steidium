@@ -24,12 +24,10 @@ jobs:
           New-Item -ItemType Directory -Force demo | Out-Null
           Copy-Item build/Release/promptemon_demo.exe demo/
           @"
-          PROMPTEMON STEIDIUM - playable prototype
+          PROMPTEMON STEIDIUM - stage scene
 
-          Install the locally-generated Rumble World resource bundle beside the executable in assets/resources-tx.
-
-          Current flow:
-          Nueva partida -> Introduccion -> starter -> Hub -> Caza -> Combate.
+          Place the installed Rumble World bundle beside the executable at assets/resources-tx.
+          This build contains no prototype menu, HUD or invented gameplay layer: it renders one complete stage at full scene scale.
           "@ | Set-Content demo/README.txt
 
       - name: Upload demo
