@@ -428,11 +428,14 @@ bool PrototypeRomRenderer::showBattle(const std::string& pm, const std::string& 
     const bool a = ensureVisual(player_, resolveCanonicalModel(archive_, pm, pn), true);
     const bool b = ensureVisual(wild_, resolveCanonicalModel(archive_, wm, wn), true);
     if (entering) {
-        playerFieldX_ = -2.6f;
-        playerFieldZ_ = 1.5f;
-        wildFieldX_ = 2.1f;
-        wildFieldZ_ = -1.8f;
-        playerYaw_ = 35.0f;
+        // Turn-based battle: both Pokemon are placed by the arena, not by free movement.
+        playerFieldX_ = -1.65f;
+        playerFieldZ_ = 1.05f;
+        wildFieldX_ = 1.45f;
+        wildFieldZ_ = -0.85f;
+        const float dx = wildFieldX_ - playerFieldX_;
+        const float dz = wildFieldZ_ - playerFieldZ_;
+        playerYaw_ = std::atan2(dx, -dz) * 180.0f / kPi;
         attack1Latch_ = attack2Latch_ = false;
         if (window_) SetFocus(window_);
     }
@@ -477,44 +480,25 @@ void PrototypeRomRenderer::setupOverlay(int width, int height) {
 }
 
 bool PrototypeRomRenderer::playerInAttackRange() const {
-    const float dx = wildFieldX_ - playerFieldX_;
-    const float dz = wildFieldZ_ - playerFieldZ_;
-    return dx * dx + dz * dz <= 5.0f;
+    // Pokemon battles are turn based. Range is not a gameplay requirement.
+    return page_ == GamePage::Battle && !battleOver_;
 }
 
 void PrototypeRomRenderer::updateBattleInput(float dt) {
+    (void)dt;
     if (page_ != GamePage::Battle || battleOver_) return;
 
-    float dx = 0.0f, dz = 0.0f;
-    if ((GetAsyncKeyState('A') & 0x8000) || (GetAsyncKeyState(VK_LEFT) & 0x8000)) dx -= 1.0f;
-    if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) dx += 1.0f;
-    if ((GetAsyncKeyState('W') & 0x8000) || (GetAsyncKeyState(VK_UP) & 0x8000)) dz -= 1.0f;
-    if ((GetAsyncKeyState('S') & 0x8000) || (GetAsyncKeyState(VK_DOWN) & 0x8000)) dz += 1.0f;
+    // No WASD/free-roam here: the player chooses a move and the turn resolver decides
+    // attack order from Speed. Keep keyboard shortcuts in addition to clickable moves.
+    const bool attack1 = (GetAsyncKeyState('Z') & 0x8000) ||
+                         (GetAsyncKeyState('J') & 0x8000) ||
+                         (GetAsyncKeyState(VK_SPACE) & 0x8000);
+    const bool attack2 = (GetAsyncKeyState('X') & 0x8000) ||
+                         (GetAsyncKeyState('K') & 0x8000);
 
-    const float len = std::sqrt(dx * dx + dz * dz);
-    if (len > .01f) {
-        dx /= len; dz /= len;
-        const float speed = 3.3f;
-        playerFieldX_ = std::clamp(playerFieldX_ + dx * speed * dt, -5.2f, 5.2f);
-        playerFieldZ_ = std::clamp(playerFieldZ_ + dz * speed * dt, -5.0f, 5.0f);
-        playerYaw_ = std::atan2(dx, -dz) * 180.0f / kPi;
-        if (player_.current == player_.idle) {
-            if (const auto* walk = chooseAnimation(player_, {"walk", "run", "move", "aruki"}, false)) {
-                player_.current = walk;
-                player_.frame = 0.0f;
-            }
-        }
-    } else if (effectTimer_ <= 0.0f && player_.current && player_.current != player_.idle && player_.current->loop) {
-        player_.current = player_.idle;
-        player_.frame = 0.0f;
-    }
-
-    const bool attack1 = (GetAsyncKeyState('Z') & 0x8000) || (GetAsyncKeyState('J') & 0x8000) || (GetAsyncKeyState(VK_SPACE) & 0x8000);
-    const bool attack2 = (GetAsyncKeyState('X') & 0x8000) || (GetAsyncKeyState('K') & 0x8000);
-
-    if (attack1 && !attack1Latch_ && parent_ && playerInAttackRange() && effectTimer_ <= 0.0f)
+    if (attack1 && !attack1Latch_ && parent_ && effectTimer_ <= 0.0f)
         SendMessageW(parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(GameAction::Move1), BN_CLICKED), 0);
-    if (attack2 && !attack2Latch_ && parent_ && playerInAttackRange() && effectTimer_ <= 0.0f)
+    if (attack2 && !attack2Latch_ && parent_ && effectTimer_ <= 0.0f)
         SendMessageW(parent_, WM_COMMAND, MAKEWPARAM(static_cast<int>(GameAction::Move2), BN_CLICKED), 0);
 
     attack1Latch_ = attack1;
@@ -536,10 +520,15 @@ void PrototypeRomRenderer::drawVisual(Visual& visual, float x, float y, float z,
 void PrototypeRomRenderer::drawStage() {
     if (!stage_.scene) return;
 
+    // Normalize the complete arena footprint to the battle camera. The old code only
+    // used one horizontal extent, which could make narrow/tall stages explode in scale.
     const float spanX = std::max(.001f, stage_.boundsMax.x - stage_.boundsMin.x);
+    const float spanY = std::max(.001f, stage_.boundsMax.y - stage_.boundsMin.y);
     const float spanZ = std::max(.001f, stage_.boundsMax.z - stage_.boundsMin.z);
-    const float horizontal = std::max(spanX, spanZ);
-    const float worldScale = 12.0f / horizontal;
+    const float fitX = 9.0f / spanX;
+    const float fitZ = 6.2f / spanZ;
+    const float fitY = 4.8f / spanY;
+    const float worldScale = std::min({fitX, fitZ, fitY});
     const float centerX = (stage_.boundsMin.x + stage_.boundsMax.x) * .5f;
     const float centerZ = (stage_.boundsMin.z + stage_.boundsMax.z) * .5f;
     const float floorY = stage_.boundsMin.y;
@@ -597,7 +586,6 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Menus are not rendered as a camera sitting outside the level.
     if (page_ == GamePage::MainMenu || page_ == GamePage::Intro || page_ == GamePage::Options)
         return;
 
@@ -615,14 +603,14 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
         return;
     }
 
-    // Camera is now looking INTO the normalized level. The stage and every actor use
-    // the same coordinate space. Moving the player therefore moves through the map,
-    // not across a separate foreground layer.
-    const float followX = page_ == GamePage::Battle ? playerFieldX_ * .38f : 0.0f;
-    const float followZ = page_ == GamePage::Battle ? playerFieldZ_ * .28f : 0.0f;
-    glTranslatef(0.0f, -2.25f, -10.8f);
-    glRotatef(31.0f, 1.0f, 0.0f, 0.0f);
-    glTranslatef(-followX, 0.0f, -followZ);
+    // Battle uses a fixed Pokemon-style arena camera. Hub/Hunt keep the wider exploration view.
+    if (page_ == GamePage::Battle) {
+        glTranslatef(0.0f, -1.45f, -9.4f);
+        glRotatef(23.0f, 1.0f, 0.0f, 0.0f);
+    } else {
+        glTranslatef(0.0f, -2.25f, -10.8f);
+        glRotatef(31.0f, 1.0f, 0.0f, 0.0f);
+    }
 
     drawStage();
 
@@ -648,14 +636,16 @@ void PrototypeRomRenderer::renderWorld(int width, int height) {
                 float dx = wx - px, dz = wz - pz;
                 const float dist = std::max(.001f, std::sqrt(dx * dx + dz * dz));
                 dx /= dist; dz /= dist;
-                if (effectTargetsWild_) { px += dx * pulse * .60f; pz += dz * pulse * .60f; }
-                else { wx -= dx * pulse * .60f; wz -= dz * pulse * .60f; }
+                const float lunge = 1.10f;
+                if (effectTargetsWild_) { px += dx * pulse * lunge; pz += dz * pulse * lunge; }
+                else { wx -= dx * pulse * lunge; wz -= dz * pulse * lunge; }
             }
+            const float playerYaw = std::atan2(wx - px, -(wz - pz)) * 180.0f / kPi;
             const float enemyYaw = std::atan2(px - wx, -(pz - wz)) * 180.0f / kPi;
-            drawShadow(px, .03f, pz, .36f, .22f, .32f);
-            drawShadow(wx, .03f, wz, .36f, .22f, .32f);
-            drawVisual(player_, px, .38f, pz, .43f, playerYaw_);
-            drawVisual(wild_, wx, .38f, wz, .43f, enemyYaw);
+            drawShadow(px, .03f, pz, .40f, .25f, .34f);
+            drawShadow(wx, .03f, wz, .40f, .25f, .34f);
+            drawVisual(player_, px, .38f, pz, .50f, playerYaw);
+            drawVisual(wild_, wx, .38f, wz, .50f, enemyYaw);
             drawAttackEffect();
             break;
         }
@@ -758,23 +748,35 @@ void PrototypeRomRenderer::renderOverlay(int width, int height) {
             const float playerRatio = std::clamp(static_cast<float>(playerHp_) / std::max(1, playerMaxHp_), 0.0f, 1.0f);
             const float wildRatio = std::clamp(static_cast<float>(wildHp_) / std::max(1, wildMaxHp_), 0.0f, 1.0f);
 
-            drawPanel(22, H - 72, std::min(430.0f, W * .38f), 50, .76f);
-            drawText(38, H - 45, playerName_ + L"  Nv." + std::to_wstring(playerLevel_), 0, false);
+            drawPanel(22, H - 102, std::min(430.0f, W * .38f), 78, .82f);
+            drawText(38, H - 73, playerName_ + L"  Nv." + std::to_wstring(playerLevel_), 0, false);
             glDisable(GL_TEXTURE_2D);
             glColor4f(.04f,.06f,.07f,.92f);
-            glBegin(GL_QUADS); glVertex2f(36,H-36); glVertex2f(350,H-36); glVertex2f(350,H-27); glVertex2f(36,H-27); glEnd();
+            glBegin(GL_QUADS); glVertex2f(36,H-62); glVertex2f(350,H-62); glVertex2f(350,H-53); glVertex2f(36,H-53); glEnd();
             glColor4f(.20f,.85f,.35f,1);
-            glBegin(GL_QUADS); glVertex2f(36,H-36); glVertex2f(36 + 314*playerRatio,H-36); glVertex2f(36 + 314*playerRatio,H-27); glVertex2f(36,H-27); glEnd();
+            glBegin(GL_QUADS); glVertex2f(36,H-62); glVertex2f(36 + 314*playerRatio,H-62); glVertex2f(36 + 314*playerRatio,H-53); glVertex2f(36,H-53); glEnd();
+            drawText(38, H - 34, std::to_wstring(playerHp_) + L" / " + std::to_wstring(playerMaxHp_) + L" PS", 0, false);
 
-            drawPanel(W - 330, 22, 308, 50, .72f);
-            drawText(W - 310, 52, (shiny_ ? L"[SHINY] " : L"") + wildName_, 0, false);
+            drawPanel(W - 350, 22, 328, 74, .82f);
+            drawText(W - 330, 48, (shiny_ ? L"[SHINY] " : L"") + wildName_ + L"  Nv." + std::to_wstring(wildLevel_), 0, false);
             glColor4f(.04f,.06f,.07f,.92f);
-            glBegin(GL_QUADS); glVertex2f(W-310,58); glVertex2f(W-42,58); glVertex2f(W-42,66); glVertex2f(W-310,66); glEnd();
+            glBegin(GL_QUADS); glVertex2f(W-330,60); glVertex2f(W-42,60); glVertex2f(W-42,69); glVertex2f(W-330,69); glEnd();
             glColor4f(.88f,.28f,.22f,1);
-            glBegin(GL_QUADS); glVertex2f(W-310,58); glVertex2f(W-310 + 268*wildRatio,58); glVertex2f(W-310 + 268*wildRatio,66); glVertex2f(W-310,66); glEnd();
+            glBegin(GL_QUADS); glVertex2f(W-330,60); glVertex2f(W-330 + 288*wildRatio,60); glVertex2f(W-330 + 288*wildRatio,69); glVertex2f(W-330,69); glEnd();
+            drawText(W - 330, 86, std::to_wstring(wildHp_) + L" / " + std::to_wstring(wildMaxHp_) + L" PS", 0, false);
 
-            drawText(W - 300, H - 44, L"Z/ESPACIO: " + move1_ + L"   X: " + move2_, 0, false);
-            if (!playerInAttackRange() && !battleOver_) drawText(W * .5f, H - 82, L"Acercate al Pokemon para atacar", 0, true);
+            if (!battleLog_.empty()) {
+                drawPanel(W * .5f - 240, 24, 480, 52, .72f);
+                drawText(W * .5f, 56, cropText(battleLog_, 58), 0, true);
+            }
+
+            if (!battleOver_) {
+                const float bw = std::min(220.0f, W * .20f);
+                drawButton({W - bw * 2 - 44, H - 104, bw, 58}, move1_, GameAction::Move1, effectTimer_ <= 0.0f);
+                drawButton({W - bw - 30, H - 104, bw, 58}, move2_, GameAction::Move2, effectTimer_ <= 0.0f);
+                drawText(W - bw - 37, H - 18, L"Z/ESPACIO                 X", 0, true);
+            }
+
             if (battleOver_) {
                 drawPanel(W * .5f - 190, H * .5f - 52, 380, 104, .90f);
                 drawText(W * .5f, H * .5f - 12, battleWon_ ? L"Pokemon derrotado" : L"Has sido derrotado", 1, true);
