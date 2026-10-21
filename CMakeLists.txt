@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(promptemon_rom
     src/rom/Lzh8.cpp
+    src/rom/Lz11.cpp
     src/rom/RomInspector.cpp
     src/rom/RomLibrary.cpp
     src/rom/RomModelArchive.cpp
@@ -61,6 +62,7 @@ if(WIN32)
         user32
         shell32
         ole32
+        comctl32
     )
 
     add_executable(promptemon_viewer WIN32
