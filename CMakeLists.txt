@@ -39,11 +39,12 @@ add_executable(rumble_probe
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
-    # Main playable prototype. The ROM is required because its actual models,
-    # textures and animations are rendered in the Hub, Hunt and Battle screens.
+    # Main playable prototype. The user chooses the ROM directory on first run;
+    # the selected path is stored in the local player SQLite database.
     add_executable(promptemon_demo WIN32
         src/demo/PromptemonGameWin32.cpp
         src/demo/PrototypeRomRenderer.cpp
+        src/storage/LocalDatabase.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     if(MSVC)
@@ -55,6 +56,8 @@ if(WIN32)
         opengl32
         gdi32
         user32
+        shell32
+        ole32
     )
 
     # Keep the inspection utility available separately for development.
