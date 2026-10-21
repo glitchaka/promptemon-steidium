@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shlobj.h>
+#include <commdlg.h>
 
 #include "demo/PrototypeRomRenderer.h"
 #include "rom/RomModelArchive.h"
@@ -151,48 +151,98 @@ int damageFor(const Species& a, int al, const std::array<int,6>& aiv,
     return std::max(1, base * randomInt(85,100) / 100);
 }
 
-std::optional<std::filesystem::path> chooseRomDirectory() {
-    BROWSEINFOW info{};
-    info.hwndOwner = nullptr;
-    info.lpszTitle = L"Selecciona la carpeta que contiene tus ROMs de Pokemon";
-    info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_NONEWFOLDERBUTTON;
-
-    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&info);
-    if (!item) return std::nullopt;
-
-    wchar_t selected[MAX_PATH]{};
-    const BOOL ok = SHGetPathFromIDListW(item, selected);
-    CoTaskMemFree(item);
-    if (!ok || !*selected) return std::nullopt;
-    return std::filesystem::path(selected);
+std::wstring encodeRomSelection(const std::vector<std::filesystem::path>& files) {
+    std::wstring encoded;
+    for (const auto& file : files) {
+        if (!encoded.empty()) encoded.push_back(L'\n');
+        encoded += file.wstring();
+    }
+    return encoded;
 }
 
-bool loadRomDirectory(const std::filesystem::path& directory, std::wstring& error) {
+std::vector<std::filesystem::path> decodeRomSelection(const std::filesystem::path& selection) {
+    std::vector<std::filesystem::path> files;
+    std::wstringstream stream(selection.wstring());
+    std::wstring line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (!line.empty()) files.emplace_back(line);
+    }
+    return files;
+}
+
+std::optional<std::filesystem::path> chooseRomDirectory() {
+    std::vector<wchar_t> buffer(65536, L'\0');
+    static const wchar_t filter[] =
+        L"ROMs compatibles\0*.3ds;*.cia;*.cci;*.cxi;*.nds;*.gba;*.gbc;*.gb\0"
+        L"Todos los archivos\0*.*\0\0";
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = nullptr;
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+    dialog.lpstrTitle = L"Selecciona una o varias ROMs";
+    dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                   OFN_ALLOWMULTISELECT | OFN_HIDEREADONLY;
+
+    if (!GetOpenFileNameW(&dialog)) return std::nullopt;
+
+    std::vector<std::filesystem::path> files;
+    const wchar_t* first = buffer.data();
+    const std::wstring base(first);
+    const wchar_t* cursor = first + base.size() + 1;
+
+    if (*cursor == L'\0') {
+        files.emplace_back(base);
+    } else {
+        const std::filesystem::path directory(base);
+        while (*cursor != L'\0') {
+            const std::wstring name(cursor);
+            files.push_back(directory / name);
+            cursor += name.size() + 1;
+        }
+    }
+
+    if (files.empty()) return std::nullopt;
+    return std::filesystem::path(encodeRomSelection(files));
+}
+
+bool loadRomDirectory(const std::filesystem::path& selection, std::wstring& error) {
     gRomArchive.close();
     gAssets.close();
     gModelResources.clear();
     gResolvedModels.clear();
 
-    std::error_code ec;
-    if (!std::filesystem::is_directory(directory, ec) || ec) {
-        error = L"La carpeta seleccionada ya no existe.";
+    const auto files = decodeRomSelection(selection);
+    if (files.empty()) {
+        error = L"No se selecciono ninguna ROM.";
         return false;
     }
 
+    for (const auto& file : files) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(file, ec) || ec) {
+            error = L"Una de las ROMs seleccionadas ya no existe: " + file.wstring();
+            return false;
+        }
+    }
+
     try {
-        if (!gRomArchive.open(directory) || gRomArchive.library().empty()) {
-            error = L"La carpeta no contiene una ROM reconocible.";
+        if (!gRomArchive.open(files) || gRomArchive.library().empty()) {
+            error = L"Los archivos seleccionados no contienen una ROM reconocible.";
             return false;
         }
         if (gRomArchive.modelResources().empty()) {
-            error = L"Se detecto la ROM, pero no contiene recursos BCH compatibles.";
+            error = L"Se detectaron las ROMs, pero ninguna contiene recursos BCH compatibles.";
             gRomArchive.close();
             return false;
         }
         return true;
     } catch (const std::exception&) {
         gRomArchive.close();
-        error = L"No se pudo abrir la ROM de esa carpeta.";
+        error = L"No se pudieron abrir las ROMs seleccionadas.";
         return false;
     }
 }
@@ -602,7 +652,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
         std::wstring error;
         if (!loadRomDirectory(*selected, error)) {
-            MessageBoxW(nullptr, error.c_str(), L"Carpeta de ROMs no valida", MB_OK | MB_ICONWARNING);
+            MessageBoxW(nullptr, error.c_str(), L"Seleccion de ROMs no valida", MB_OK | MB_ICONWARNING);
             continue;
         }
 
