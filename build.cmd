@@ -2,10 +2,6 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-rem Las ROMs son datos externos elegidos por el usuario al ejecutar el juego.
-rem Su ruta se guarda en %%LOCALAPPDATA%%\PromptemonSteidium\player.db.
-rem Este script no crea, mueve ni borra carpetas de ROMs.
-
 git pull --ff-only || exit /b 1
 
 set "GENERATOR="
@@ -23,37 +19,24 @@ if exist "%VSWHERE%" (
 
 if not defined GENERATOR (
     echo No se encontro una instalacion de Visual Studio/Build Tools con C++.
-    echo Instala "Desktop development with C++" o los Visual Studio Build Tools con MSVC y Windows SDK.
     exit /b 1
 )
 
 echo Usando: %GENERATOR%
 
-rem Si build fue generado con otra version de Visual Studio, hay que regenerarlo.
-if exist build\CMakeCache.txt (
-    set "CACHED_GENERATOR="
-    for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"CMAKE_GENERATOR:INTERNAL=" build\CMakeCache.txt') do set "CACHED_GENERATOR=%%B"
-    if defined CACHED_GENERATOR if /I not "!CACHED_GENERATOR!"=="%GENERATOR%" (
-        echo Regenerando build: !CACHED_GENERATOR! -^> %GENERATOR%
-        rmdir /s /q build
-    )
-)
+rem El linker trabaja siempre en un directorio temporal limpio. Asi nunca intenta
+rem enlazar encima del ejecutable que esta en build\Release.
+if exist build-link rmdir /s /q build-link
+cmake -S . -B build-link -G "%GENERATOR%" -A x64 || exit /b 1
+cmake --build build-link --config Release --target promptemon_demo || exit /b 1
 
-rem Windows, Explorer, Defender u otro proceso pueden conservar temporalmente un handle
-rem sobre un EXE anterior aun cuando el juego ya no esta abierto. Para que el linker nunca
-rem dependa de sobrescribir ese archivo, cada build usa un nombre de salida nuevo.
-set "BUILD_STAMP="
-for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss_fff"') do set "BUILD_STAMP=%%T"
-if not defined BUILD_STAMP set "BUILD_STAMP=%RANDOM%%RANDOM%"
-set "OUTPUT_BASENAME=promptemon_demo_!BUILD_STAMP!"
+if not exist build\Release mkdir build\Release
 
-rem Limpia ejecutables antiguos que no esten bloqueados. Los bloqueados se ignoran.
+rem Elimina la salida temporal absurda usada por builds anteriores.
 if exist build\Release\promptemon_demo_*.exe del /q build\Release\promptemon_demo_*.exe >nul 2>nul
+if exist build\Release\LATEST_PROMPTEMON.txt del /q build\Release\LATEST_PROMPTEMON.txt >nul 2>nul
 
-cmake -S . -B build -G "%GENERATOR%" -A x64 -DPROMPTEMON_OUTPUT_BASENAME=!OUTPUT_BASENAME! || exit /b 1
-cmake --build build --config Release --target promptemon_demo || exit /b 1
-
->build\Release\LATEST_PROMPTEMON.txt echo !OUTPUT_BASENAME!.exe
+copy /Y build-link\Release\promptemon_demo.exe build\Release\promptemon_demo.exe >nul || exit /b 1
 
 echo.
-echo Listo: build\Release\!OUTPUT_BASENAME!.exe
+echo Listo: build\Release\promptemon_demo.exe
