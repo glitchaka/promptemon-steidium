@@ -118,6 +118,8 @@ private:
         const bch::Animation* current = nullptr;
         float frame = 0.0f;
         bch::Vec3 center{};
+        bch::Vec3 boundsMin{};
+        bch::Vec3 boundsMax{};
         float fitScale = 1.0f;
         std::unordered_map<std::string, unsigned int> textures;
     };
@@ -227,11 +229,12 @@ private:
     HFONT hFontMedium_ = nullptr;
     HFONT hFontLarge_ = nullptr;
 
-    // Direct field control used on the Rumble-style combat screen.
-    float playerFieldX_ = -2.4f;
-    float playerFieldZ_ = -6.8f;
-    float wildFieldX_ = 2.4f;
-    float wildFieldZ_ = -8.8f;
+    // Coordinates in the normalized level space. The stage renderer maps the BCH
+    // level bounds into this same world; these are no longer screen-space props.
+    float playerFieldX_ = -2.6f;
+    float playerFieldZ_ = -0.8f;
+    float wildFieldX_ = 2.2f;
+    float wildFieldZ_ = -2.4f;
     float playerYaw_ = 35.0f;
     bool attack1Latch_ = false;
     bool attack2Latch_ = false;
