@@ -14,10 +14,10 @@ public:
     bool load(storage::RomAssetCache& assets);
     void release();
 
-    // The ROM skin is optional at runtime. Missing/undecodable UI assets must not
-    // abort the whole prototype; callers can keep running in degraded mode while
-    // ui_scan.tsv and the startup monitor report the exact missing pieces.
-    bool ready() const noexcept { return true; }
+    // Promptemon is deliberately tied to the Rumble World presentation. Do not
+    // silently fall back to desktop fonts/flat rectangles: if the native skin was
+    // not decoded, the renderer must fail visibly instead of shipping a fake UI.
+    bool ready() const noexcept { return nativeSkinReady(); }
     bool nativeSkinReady() const noexcept { return fontReady_ && buttonTexture_ != 0 && panelTexture_ != 0; }
     const std::string& fontResource() const noexcept { return fontResource_; }
     const std::string& buttonResource() const noexcept { return buttonResource_; }
