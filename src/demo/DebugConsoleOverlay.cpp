@@ -15,6 +15,33 @@ COLORREF backgroundColor() { return RGB(72, 76, 72); }
 COLORREF textColor() { return RGB(225, 225, 225); }
 COLORREF inputColor() { return RGB(58, 61, 58); }
 
+DebugConsoleOverlay* gHookConsole = nullptr;
+HHOOK gKeyboardHook = nullptr;
+bool gToggleLatch = false;
+
+LRESULT CALLBACK keyboardHookProc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION && gHookConsole) {
+        const auto* key = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
+        const bool keyDown = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+        const bool keyUp = (wp == WM_KEYUP || wp == WM_SYSKEYUP);
+
+        if (key && key->vkCode == 'C') {
+            if (keyDown) {
+                const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (ctrl && shift && !gToggleLatch) {
+                    gToggleLatch = true;
+                    gHookConsole->toggle();
+                    return 1;
+                }
+            } else if (keyUp) {
+                gToggleLatch = false;
+            }
+        }
+    }
+    return CallNextHookEx(gKeyboardHook, code, wp, lp);
+}
+
 } // namespace
 
 DebugConsoleOverlay::~DebugConsoleOverlay() {
@@ -79,6 +106,11 @@ bool DebugConsoleOverlay::create(HWND parent, Executor executor) {
     SendMessageW(input_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     SetWindowSubclass(input_, InputProc, kInputSubclassId, reinterpret_cast<DWORD_PTR>(this));
 
+    gHookConsole = this;
+    if (!gKeyboardHook) {
+        gKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardHookProc, GetModuleHandleW(nullptr), 0);
+    }
+
     append("Promptemon Steidium developer console\r\n");
     append("Ctrl+Shift+C abre/cierra | Esc cierra | help lista comandos\r\n");
     resize();
@@ -87,6 +119,13 @@ bool DebugConsoleOverlay::create(HWND parent, Executor executor) {
 }
 
 void DebugConsoleOverlay::destroy() {
+    if (gHookConsole == this) gHookConsole = nullptr;
+    if (gKeyboardHook) {
+        UnhookWindowsHookEx(gKeyboardHook);
+        gKeyboardHook = nullptr;
+    }
+    gToggleLatch = false;
+
     if (input_) RemoveWindowSubclass(input_, InputProc, kInputSubclassId);
     if (window_ && IsWindow(window_)) DestroyWindow(window_);
     window_ = nullptr;
@@ -111,6 +150,8 @@ void DebugConsoleOverlay::show(bool visible) {
     resize();
     ShowWindow(window_, visible ? SW_SHOW : SW_HIDE);
     if (visible) {
+        SetWindowPos(window_, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         BringWindowToTop(window_);
         SetFocus(input_);
         SendMessageW(input_, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
@@ -137,7 +178,6 @@ void DebugConsoleOverlay::layout() {
     GetClientRect(window_, &rc);
     constexpr int pad = 12;
     constexpr int inputHeight = 30;
-
     const int clientWidth = static_cast<int>(rc.right - rc.left);
     const int clientHeight = static_cast<int>(rc.bottom - rc.top);
     const int contentWidth = std::max(1, clientWidth - pad * 2);
@@ -163,17 +203,14 @@ void DebugConsoleOverlay::submit() {
     if (!input_ || !executor_) return;
     const int length = GetWindowTextLengthW(input_);
     if (length <= 0) return;
-
-    std::wstring wide(static_cast<std::size_t>(length + 1), L'\0');
+    std::wstring wide(static_cast<std::size_t>(length) + 1, L'\0');
     GetWindowTextW(input_, wide.data(), length + 1);
     wide.resize(static_cast<std::size_t>(length));
     SetWindowTextW(input_, L"");
 
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);
     std::string command(static_cast<std::size_t>(std::max(bytes, 0)), '\0');
-    if (bytes > 0) {
-        WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, command.data(), bytes, nullptr, nullptr);
-    }
+    if (bytes > 0) WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, command.data(), bytes, nullptr, nullptr);
 
     append("> " + command + "\r\n");
     std::string result = executor_(command);
