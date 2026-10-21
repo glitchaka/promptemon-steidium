@@ -39,17 +39,22 @@ add_executable(rumble_probe
 target_link_libraries(rumble_probe PRIVATE promptemon_rom)
 
 if(WIN32)
-    # Current playable prototype: menu -> intro -> starter -> hub -> hunt -> battle.
+    # Main playable prototype. The ROM is required because its actual models,
+    # textures and animations are rendered in the Hub, Hunt and Battle screens.
     add_executable(promptemon_demo WIN32
-        src/demo/PromptemonPrototypeWin32.cpp
+        src/demo/PromptemonGameWin32.cpp
+        src/demo/PrototypeRomRenderer.cpp
     )
     target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_link_libraries(promptemon_demo PRIVATE
+        promptemon_rom
+        promptemon_bch
+        opengl32
         gdi32
         user32
     )
 
-    # Preserve the existing ROM/BCH 3D viewer while the playable prototype grows.
+    # Keep the inspection utility available separately for development.
     add_executable(promptemon_viewer WIN32
         src/demo/PromptemonDemoWin32.cpp
     )
