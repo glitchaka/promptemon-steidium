@@ -54,45 +54,88 @@ const Glyph* BitmapFont::findGlyph(std::uint32_t codepoint) const noexcept {
 
 bool isBcfnt(const std::vector<std::uint8_t>& data) noexcept {
     if (data.size() < 0x34) return false;
-    return magicAt(data, 0, "CFNT") || magicAt(data, 0, "FFNT");
+    return magicAt(data, 0, "CFNT") || magicAt(data, 0, "CFNU") ||
+           magicAt(data, 0, "FFNT") || magicAt(data, 0, "FFNU");
 }
 
 BitmapFont decodeBcfnt(const std::vector<std::uint8_t>& data) {
     BitmapFont font;
     if (!isBcfnt(data)) return font;
+
+    // Rumble World resources are little-endian. The BOM bytes are FF FE,
+    // which read as 0xFEFF with the little-endian helpers used here.
     if (u16(data, 0x04) != 0xFEFFu) return font;
 
+    const bool bffnt = magicAt(data, 0, "FFNT") || magicAt(data, 0, "FFNU");
     const std::uint16_t headerSize = u16(data, 0x06);
     if (headerSize < 0x14 || static_cast<std::size_t>(headerSize) + 0x20 > data.size()) return font;
 
     const std::size_t finf = headerSize;
     if (!magicAt(data, finf, "FINF")) return font;
 
-    // Pokemon Rumble World is a CTR title and uses the version-3 CFNT layout.
-    font.lineFeed = static_cast<int>(data[finf + 0x09]);
-    font.fallbackGlyphIndex = u16(data, finf + 0x0A);
-    font.defaultMetrics.left = signedByte(data[finf + 0x0C]);
-    font.defaultMetrics.glyphWidth = signedByte(data[finf + 0x0D]);
-    font.defaultMetrics.charWidth = signedByte(data[finf + 0x0E]);
+    std::uint32_t tglpPointer = 0;
+    std::uint32_t cwdhPointer = 0;
+    std::uint32_t cmapPointer = 0;
 
-    const std::uint32_t tglpPointer = u32(data, finf + 0x10);
-    const std::uint32_t cwdhPointer = u32(data, finf + 0x14);
-    const std::uint32_t cmapPointer = u32(data, finf + 0x18);
+    if (bffnt) {
+        // BFFNT/FFNT FINF layout (NW font):
+        // 08 type, 09 height, 0A width, 0B ascent,
+        // 0C lineFeed(u16), 0E alterChar(u16), 10..12 default widths,
+        // 13 encoding, 14/18/1C pointers.
+        font.lineFeed = static_cast<int>(u16(data, finf + 0x0C));
+        font.fallbackGlyphIndex = u16(data, finf + 0x0E);
+        font.defaultMetrics.left = signedByte(data[finf + 0x10]);
+        font.defaultMetrics.glyphWidth = signedByte(data[finf + 0x11]);
+        font.defaultMetrics.charWidth = signedByte(data[finf + 0x12]);
+        tglpPointer = u32(data, finf + 0x14);
+        cwdhPointer = u32(data, finf + 0x18);
+        cmapPointer = u32(data, finf + 0x1C);
+    } else {
+        // BCFNT/CFNT version-3 CTR FINF layout.
+        font.lineFeed = static_cast<int>(data[finf + 0x09]);
+        font.fallbackGlyphIndex = u16(data, finf + 0x0A);
+        font.defaultMetrics.left = signedByte(data[finf + 0x0C]);
+        font.defaultMetrics.glyphWidth = signedByte(data[finf + 0x0D]);
+        font.defaultMetrics.charWidth = signedByte(data[finf + 0x0E]);
+        tglpPointer = u32(data, finf + 0x10);
+        cwdhPointer = u32(data, finf + 0x14);
+        cmapPointer = u32(data, finf + 0x18);
+    }
 
     const std::size_t tglp = pointedSection(tglpPointer, data.size());
     if (tglp == static_cast<std::size_t>(-1) || tglp + 0x20 > data.size() || !magicAt(data, tglp, "TGLP")) return {};
 
     font.cellWidth = static_cast<int>(data[tglp + 0x08]);
     font.cellHeight = static_cast<int>(data[tglp + 0x09]);
-    font.baseline = static_cast<int>(data[tglp + 0x0A]);
-    const std::uint32_t sheetSize = u32(data, tglp + 0x0C);
-    const int sheetCount = static_cast<int>(u16(data, tglp + 0x10));
-    const int format = static_cast<int>(u16(data, tglp + 0x12));
-    font.columns = static_cast<int>(u16(data, tglp + 0x14));
-    font.rows = static_cast<int>(u16(data, tglp + 0x16));
-    font.sheetWidth = static_cast<int>(u16(data, tglp + 0x18));
-    font.sheetHeight = static_cast<int>(u16(data, tglp + 0x1A));
-    const std::uint32_t sheetDataOffset = u32(data, tglp + 0x1C);
+
+    std::uint32_t sheetSize = 0;
+    int sheetCount = 0;
+    int format = 0;
+    std::uint32_t sheetDataOffset = 0;
+
+    if (bffnt) {
+        // BFFNT TGLP: sheet count is a byte at 0x0A and baseline is u16 at 0x10.
+        sheetCount = static_cast<int>(data[tglp + 0x0A]);
+        sheetSize = u32(data, tglp + 0x0C);
+        font.baseline = static_cast<int>(u16(data, tglp + 0x10));
+        format = static_cast<int>(u16(data, tglp + 0x12));
+        font.columns = static_cast<int>(u16(data, tglp + 0x14));
+        font.rows = static_cast<int>(u16(data, tglp + 0x16));
+        font.sheetWidth = static_cast<int>(u16(data, tglp + 0x18));
+        font.sheetHeight = static_cast<int>(u16(data, tglp + 0x1A));
+        sheetDataOffset = u32(data, tglp + 0x1C);
+    } else {
+        // BCFNT TGLP: baseline is a byte at 0x0A; sheet count is u16 at 0x10.
+        font.baseline = static_cast<int>(data[tglp + 0x0A]);
+        sheetSize = u32(data, tglp + 0x0C);
+        sheetCount = static_cast<int>(u16(data, tglp + 0x10));
+        format = static_cast<int>(u16(data, tglp + 0x12));
+        font.columns = static_cast<int>(u16(data, tglp + 0x14));
+        font.rows = static_cast<int>(u16(data, tglp + 0x16));
+        font.sheetWidth = static_cast<int>(u16(data, tglp + 0x18));
+        font.sheetHeight = static_cast<int>(u16(data, tglp + 0x1A));
+        sheetDataOffset = u32(data, tglp + 0x1C);
+    }
 
     if (font.cellWidth <= 0 || font.cellHeight <= 0 || font.columns <= 0 || font.rows <= 0 ||
         font.sheetWidth <= 0 || font.sheetHeight <= 0 || sheetCount <= 0 || sheetCount > 64 ||
