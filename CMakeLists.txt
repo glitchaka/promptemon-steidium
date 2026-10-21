@@ -46,7 +46,7 @@ if(WIN32)
         src/demo/PrototypeRomRenderer.cpp
         src/storage/LocalDatabase.cpp
     )
-    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
     if(MSVC)
         target_compile_options(promptemon_demo PRIVATE /utf-8)
     endif()
