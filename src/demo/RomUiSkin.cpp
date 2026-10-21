@@ -93,9 +93,9 @@ unsigned int RomUiSkin::upload(const ctr::Image& image) const {
     return texture;
 }
 
-bool RomUiSkin::load(rom::RomModelArchive& archive) {
+bool RomUiSkin::load(storage::RomAssetCache& assets) {
     release();
-    const auto resources = archive.resources();
+    const auto resources = assets.resources();
     if (resources.empty()) return false;
 
     std::vector<std::pair<int, std::string>> fonts;
@@ -108,7 +108,7 @@ bool RomUiSkin::load(rom::RomModelArchive& archive) {
     const std::size_t fontAttempts = std::min<std::size_t>(fonts.size(), 64);
     for (std::size_t i = 0; i < fontAttempts && !fontReady_; ++i) {
         try {
-            const auto bytes = archive.extractResource(fonts[i].second);
+            const auto bytes = assets.extractResource(fonts[i].second);
             if (!ctr::isBcfnt(bytes)) continue;
             auto decoded = ctr::decodeBcfnt(bytes);
             if (!decoded.valid()) continue;
@@ -154,7 +154,7 @@ bool RomUiSkin::load(rom::RomModelArchive& archive) {
     const std::size_t imageAttempts = std::min<std::size_t>(images.size(), 160);
     for (std::size_t i = 0; i < imageAttempts; ++i) {
         try {
-            const auto bytes = archive.extractResource(images[i].second);
+            const auto bytes = assets.extractResource(images[i].second);
             if (!ctr::isBclim(bytes)) continue;
             ctr::Image image = ctr::decodeBclim(bytes);
             if (!image.valid()) continue;
