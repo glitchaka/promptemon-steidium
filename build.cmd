@@ -40,7 +40,27 @@ copy /Y build-link\Release\promptemon_demo.exe build\Release\promptemon_demo.exe
 copy /Y build-link\Release\promptemon_resource_packager.exe build\Release\promptemon_resource_packager.exe >nul || exit /b 1
 copy /Y build-link\Release\promptemon_resource_sfx.exe build\Release\promptemon_resource_sfx.exe >nul || exit /b 1
 
+rem Mantiene los recursos sincronizados con el codigo. El bundle anterior podia
+rem conservar solo el modelo y omitir anim.bch; por eso un EXE nuevo fallaba contra
+rem assets viejos. Busca resources-tx junto al repo o dentro del repo.
+set "RESOURCES="
+if exist "%~dp0..\resources-tx\files\romfs" set "RESOURCES=%~dp0..\resources-tx"
+if not defined RESOURCES if exist "%~dp0resources-tx\files\romfs" set "RESOURCES=%~dp0resources-tx"
+
+if defined RESOURCES (
+    echo Empaquetando recursos desde: !RESOURCES!
+    build-link\Release\promptemon_resource_packager.exe "!RESOURCES!" build-link\Release\promptemon_resource_sfx.exe build\Release\PromptemonResources.exe || exit /b 1
+    build\Release\PromptemonResources.exe "%CD%\build\Release\assets\resources-tx" || exit /b 1
+) else (
+    echo ERROR: no se encontro resources-tx para regenerar assets.
+    echo Buscado en:
+    echo   %~dp0..\resources-tx
+    echo   %~dp0resources-tx
+    exit /b 1
+)
+
 echo.
 echo Listo: build\Release\promptemon_demo.exe
 echo Listo: build\Release\promptemon_resource_packager.exe
 echo Listo: build\Release\promptemon_resource_sfx.exe
+echo Listo: build\Release\assets\resources-tx
