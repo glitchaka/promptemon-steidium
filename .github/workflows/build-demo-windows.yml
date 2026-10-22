@@ -16,7 +16,7 @@ jobs:
         run: cmake -S . -B build -A x64
 
       - name: Build demo and resource tools
-        run: cmake --build build --config Release --target promptemon_demo promptemon_resource_packager promptemon_resource_sfx
+        run: cmake --build build --config Release --target promptemon_demo promptemon_stage_jump promptemon_resource_packager promptemon_resource_sfx
 
       - name: Verify Pokemon animation companions are packaged
         shell: pwsh
@@ -61,12 +61,19 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force demo | Out-Null
           Copy-Item build/Release/promptemon_demo.exe demo/
+          Copy-Item build/Release/promptemon_stage_jump.exe demo/
           Copy-Item build/Release/promptemon_resource_packager.exe demo/
           Copy-Item build/Release/promptemon_resource_sfx.exe demo/
           @"
           PROMPTEMON STEIDIUM - stage scene
 
-          promptemon_demo.exe renders the stage scene.
+          promptemon_demo.exe is the main stage prototype.
+          promptemon_stage_jump.exe is the isolated camera/stage/Pokemon jump test:
+            - one native-scale Rattata at arena center
+            - left click jumps
+            - right-drag rotates camera
+            - mouse wheel zooms
+            - R resets camera
           promptemon_resource_packager.exe creates the self-extracting resource bundle from resources-tx.
           promptemon_resource_sfx.exe is the SFX stub used by the packager.
           "@ | Set-Content demo/README.txt
