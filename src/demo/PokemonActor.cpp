@@ -191,10 +191,16 @@ bool PokemonActor::update(float dt) {
 }
 
 void PokemonActor::place(const ArenaView& arena, float side, float yawDegrees) {
+    placeAt(arena, side * .36f, 0.0f, yawDegrees);
+}
+
+void PokemonActor::placeAt(const ArenaView& arena, float normalizedX, float normalizedZ, float yawDegrees) {
     if (!scene_) return;
-    position_ = {arena.center.x + side * arena.halfX * .36f,
+    const float nx = std::clamp(normalizedX, -.84f, .84f);
+    const float nz = std::clamp(normalizedZ, -.84f, .84f);
+    position_ = {arena.center.x + nx * arena.halfX,
                  arena.floorY,
-                 arena.center.z};
+                 arena.center.z + nz * arena.halfZ};
     yawDeg_ = yawDegrees;
     verticalOffset_ = 0.0f;
 }
