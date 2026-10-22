@@ -42,6 +42,17 @@ if(MSVC)
 endif()
 
 if(WIN32)
+    # Small C&C-style LAN transport: UDP, 8 slots, base port 8088, broadcast discovery.
+    add_library(promptemon_cnc_lan
+        src/net/CncLanSession.cpp
+    )
+    target_include_directories(promptemon_cnc_lan PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(promptemon_cnc_lan PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(promptemon_cnc_lan PRIVATE /utf-8)
+    endif()
+    target_link_libraries(promptemon_cnc_lan PUBLIC ws2_32)
+
     add_library(promptemon_demo_core
         src/demo/SceneRenderSupport.cpp
         src/demo/CameraController.cpp
@@ -75,8 +86,8 @@ if(WIN32)
     endif()
     target_link_libraries(promptemon_demo PRIVATE promptemon_demo_core)
 
-    # Minimal alternative executable: enlarged stage view, one native-scale
-    # Pokemon at arena center, left-click jump. Kept separate from promptemon_demo.
+    # Alternative executable: enlarged in-stadium view, local Pokemon exactly
+    # at arena center, left-click jump and automatic C&C-style LAN peers.
     add_executable(promptemon_stage_jump WIN32
         src/demo/StageJumpDemoWin32.cpp
     )
@@ -84,5 +95,14 @@ if(WIN32)
     if(MSVC)
         target_compile_options(promptemon_stage_jump PRIVATE /utf-8)
     endif()
-    target_link_libraries(promptemon_stage_jump PRIVATE promptemon_demo_core)
+    target_link_libraries(promptemon_stage_jump PRIVATE promptemon_demo_core promptemon_cnc_lan)
+
+    add_executable(promptemon_lan_smoke
+        tools/promptemon_lan_smoke.cpp
+    )
+    target_compile_definitions(promptemon_lan_smoke PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(promptemon_lan_smoke PRIVATE /utf-8)
+    endif()
+    target_link_libraries(promptemon_lan_smoke PRIVATE promptemon_cnc_lan)
 endif()
