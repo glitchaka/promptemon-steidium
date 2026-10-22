@@ -28,7 +28,10 @@ rem El linker trabaja siempre en un directorio temporal limpio. Asi nunca intent
 rem enlazar encima de los ejecutables que estan en build\Release.
 if exist build-link rmdir /s /q build-link
 cmake -S . -B build-link -G "%GENERATOR%" -A x64 || exit /b 1
-cmake --build build-link --config Release --target promptemon_demo promptemon_stage_jump promptemon_resource_packager promptemon_resource_sfx || exit /b 1
+cmake --build build-link --config Release --target promptemon_demo promptemon_stage_jump promptemon_lan_smoke promptemon_resource_packager promptemon_resource_sfx || exit /b 1
+
+echo Probando dos sesiones LAN C&C...
+build-link\Release\promptemon_lan_smoke.exe || exit /b 1
 
 if not exist build\Release mkdir build\Release
 
@@ -63,6 +66,7 @@ if defined RESOURCES (
 echo.
 echo Listo: build\Release\promptemon_demo.exe
 echo Listo: build\Release\promptemon_stage_jump.exe
+echo LAN C&C: prueba de 2 sesiones OK
 echo Listo: build\Release\promptemon_resource_packager.exe
 echo Listo: build\Release\promptemon_resource_sfx.exe
 echo Listo: build\Release\assets\resources-tx
