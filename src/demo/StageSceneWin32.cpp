@@ -1,15 +1,18 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <GL/gl.h>
+#include <GL/glu.h>
 
 #include "bch/BchScene.h"
 #include "ctr/Bclim.h"
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <initializer_list>
 #include <memory>
@@ -35,9 +38,12 @@ struct TexturePool {
     std::unordered_map<std::string, GLuint> aliases;
 };
 
+using MaterialTextureNames = std::array<std::string, 3>;
+
 struct StagePart {
     std::string path;
     std::unique_ptr<Scene> scene;
+    std::vector<MaterialTextureNames> materialTextures;
     Vec3 min{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 max{-FLT_MAX, -FLT_MAX, -FLT_MAX};
 };
@@ -45,6 +51,7 @@ struct StagePart {
 struct Actor {
     std::string path;
     std::unique_ptr<Scene> scene;
+    std::vector<MaterialTextureNames> materialTextures;
     TexturePool textures;
     Vec3 min{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 max{-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -71,9 +78,9 @@ struct App {
     float arenaHalfZ = 1.0f;
     float arenaFloorY = 0.0f;
 
-    float zoom = 8.0f;
-    float yawDeg = 0.0f;
-    float pitchDeg = 0.0f;
+    float cameraDistance = 1.0f;
+    float cameraYawDeg = 45.0f;
+    float cameraPitchDeg = 28.0f;
     float panX = 0.0f;
     float panZ = 0.0f;
     bool dragging = false;
@@ -171,6 +178,81 @@ Vec2 materialUv(const Material* material, Vec2 uv) {
             (x * s + y * c + .5f) * material->uvScaleV - material->uvTranslateV};
 }
 
+std::uint32_t readU32(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    if (offset + 4 > data.size()) return 0;
+    return static_cast<std::uint32_t>(data[offset]) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+}
+
+void writeU32(std::vector<std::uint8_t>& data, std::size_t offset, std::uint32_t value) {
+    if (offset + 4 > data.size()) return;
+    data[offset] = static_cast<std::uint8_t>(value);
+    data[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+    data[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+    data[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+}
+
+std::string bchString(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    if (!offset || offset >= data.size()) return {};
+    std::size_t end = offset;
+    while (end < data.size() && data[end] != 0) ++end;
+    return std::string(reinterpret_cast<const char*>(data.data() + offset), end - offset);
+}
+
+std::vector<MaterialTextureNames> extractMaterialTextureNames(const std::vector<std::uint8_t>& raw) {
+    std::vector<MaterialTextureNames> out;
+    if (raw.size() < 0x40 || raw[0] != 'B' || raw[1] != 'C' || raw[2] != 'H') return out;
+
+    auto data = raw;
+    const std::uint8_t bc = data[4];
+    const std::uint32_t mainOffset = readU32(data, 8);
+    const std::uint32_t stringOffset = readU32(data, 12);
+    const std::uint32_t relocationOffset = readU32(data, bc > 0x20 ? 28 : 24);
+    const std::uint32_t relocationLength = readU32(data, bc > 0x20 ? 52 : 44);
+
+    const std::uint64_t relocationEnd = std::min<std::uint64_t>(
+        static_cast<std::uint64_t>(relocationOffset) + relocationLength, data.size());
+    for (std::uint32_t o = relocationOffset; static_cast<std::uint64_t>(o) + 4 <= relocationEnd; o += 4) {
+        const std::uint32_t value = readU32(data, o);
+        const std::uint32_t offset = value & 0x1ffffffu;
+        const std::uint32_t flags = value >> 25;
+        if (flags == 0) {
+            const std::size_t patch = static_cast<std::size_t>(offset) * 4u + mainOffset;
+            if (patch + 4 <= data.size()) writeU32(data, patch, readU32(data, patch) + mainOffset);
+        } else if (flags == 1) {
+            const std::size_t patch = static_cast<std::size_t>(offset) + mainOffset;
+            if (patch + 4 <= data.size()) writeU32(data, patch, readU32(data, patch) + stringOffset);
+        }
+    }
+
+    if (static_cast<std::size_t>(mainOffset) + 8 > data.size()) return out;
+    const std::uint32_t modelTable = readU32(data, mainOffset);
+    const std::uint32_t modelCount = readU32(data, mainOffset + 4);
+    if (!modelTable || !modelCount || static_cast<std::size_t>(modelTable) + 4 > data.size()) return out;
+    const std::uint32_t modelHeader = readU32(data, modelTable);
+    if (!modelHeader || static_cast<std::size_t>(modelHeader) + 64 > data.size()) return out;
+
+    const std::size_t materialsHeader = static_cast<std::size_t>(modelHeader) + 4u + 48u;
+    const std::uint32_t materialsOffset = readU32(data, materialsHeader);
+    const std::uint32_t materialCount = std::min<std::uint32_t>(readU32(data, materialsHeader + 4), 4096u);
+    const std::size_t stride = bc < 0x21 ? 0x58u : 0x2cu;
+    const std::size_t name0Offset = bc < 0x21 ? 0x48u : 0x1cu;
+
+    out.reserve(materialCount);
+    for (std::uint32_t i = 0; i < materialCount; ++i) {
+        const std::size_t materialOffset = static_cast<std::size_t>(materialsOffset) + static_cast<std::size_t>(i) * stride;
+        if (materialOffset + stride > data.size()) break;
+        MaterialTextureNames names{};
+        for (std::size_t slot = 0; slot < names.size(); ++slot) {
+            names[slot] = bchString(data, readU32(data, materialOffset + name0Offset + slot * 4u));
+        }
+        out.push_back(std::move(names));
+    }
+    return out;
+}
+
 bool computeSceneBounds(const Scene& scene, Vec3& minOut, Vec3& maxOut) {
     minOut = {FLT_MAX, FLT_MAX, FLT_MAX};
     maxOut = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -179,6 +261,7 @@ bool computeSceneBounds(const Scene& scene, Vec3& minOut, Vec3& maxOut) {
     for (const auto& mesh : scene.meshes()) {
         for (const auto& vertex : mesh.vertices) {
             const auto p = scene.skin(vertex, pose);
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
             minOut.x = std::min(minOut.x, p.x);
             minOut.y = std::min(minOut.y, p.y);
             minOut.z = std::min(minOut.z, p.z);
@@ -191,6 +274,30 @@ bool computeSceneBounds(const Scene& scene, Vec3& minOut, Vec3& maxOut) {
     return found;
 }
 
+bool computeRobustSceneBounds(const Scene& scene, Vec3& minOut, Vec3& maxOut) {
+    std::vector<float> xs, ys, zs;
+    const auto pose = scene.samplePose(nullptr, 0.0f);
+    for (const auto& mesh : scene.meshes()) {
+        for (const auto& vertex : mesh.vertices) {
+            const auto p = scene.skin(vertex, pose);
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+            xs.push_back(p.x);
+            ys.push_back(p.y);
+            zs.push_back(p.z);
+        }
+    }
+    if (xs.empty()) return false;
+    std::sort(xs.begin(), xs.end());
+    std::sort(ys.begin(), ys.end());
+    std::sort(zs.begin(), zs.end());
+
+    const std::size_t trim = xs.size() >= 100 ? xs.size() / 50 : 0;
+    const std::size_t hi = xs.size() - 1 - trim;
+    minOut = {xs[trim], ys[trim], zs[trim]};
+    maxOut = {xs[hi], ys[hi], zs[hi]};
+    return maxOut.x > minOut.x && maxOut.y > minOut.y && maxOut.z > minOut.z;
+}
+
 void destroyTexturePool(TexturePool& pool) {
     for (GLuint id : pool.owned) if (id) glDeleteTextures(1, &id);
     pool.owned.clear();
@@ -199,6 +306,7 @@ void destroyTexturePool(TexturePool& pool) {
 
 void registerAliases(TexturePool& pool, const std::string& key, GLuint id) {
     const std::string exact = lowerAscii(key);
+    if (exact.empty()) return;
     pool.aliases.emplace(exact, id);
     pool.aliases.emplace(leafName(exact), id);
     pool.aliases.emplace(stemName(exact), id);
@@ -206,7 +314,7 @@ void registerAliases(TexturePool& pool, const std::string& key, GLuint id) {
 
 void uploadRgba(TexturePool& pool, const std::string& key, int width, int height,
                 const std::vector<std::uint8_t>& rgba) {
-    if (width <= 0 || height <= 0 || rgba.size() != static_cast<std::size_t>(width) * height * 4u) return;
+    if (width <= 0 || height <= 0 || rgba.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u) return;
     if (pool.aliases.find(lowerAscii(key)) != pool.aliases.end()) return;
 
     GLuint id = 0;
@@ -230,17 +338,29 @@ void uploadSceneTextures(TexturePool& pool, const Scene& scene) {
     }
 }
 
-void loadExternalTextures(const std::string& directory, TexturePool& pool) {
-    const std::string prefix = lowerAscii(directory);
+void loadExternalTexturesForStage(TexturePool& pool) {
     for (const auto& resource : gApp.assets.resources()) {
-        const std::string path = lowerAscii(resource);
-        if (path.rfind(prefix, 0) != 0) continue;
+        if (!isStageResource(resource)) continue;
         try {
             const auto bytes = gApp.assets.extractResource(resource);
             if (!promptemon::ctr::isBclim(bytes)) continue;
             const auto image = promptemon::ctr::decodeBclim(bytes);
-            if (!image.valid()) continue;
-            uploadRgba(pool, resource, image.width, image.height, image.rgba);
+            if (image.valid()) uploadRgba(pool, resource, image.width, image.height, image.rgba);
+        } catch (...) {
+        }
+    }
+}
+
+void loadExternalTexturesForPokemon(const std::string& modelPath, TexturePool& pool) {
+    const std::string directory = parentPath(lowerAscii(modelPath));
+    for (const auto& resource : gApp.assets.resources()) {
+        const std::string p = lowerAscii(resource);
+        if (!isPokemonResource(resource) || p.rfind(directory, 0) != 0) continue;
+        try {
+            const auto bytes = gApp.assets.extractResource(resource);
+            if (!promptemon::ctr::isBclim(bytes)) continue;
+            const auto image = promptemon::ctr::decodeBclim(bytes);
+            if (image.valid()) uploadRgba(pool, resource, image.width, image.height, image.rgba);
         } catch (...) {
         }
     }
@@ -272,6 +392,7 @@ GLuint lookupTexture(const TexturePool& pool, const std::string& requested) {
 void destroyActor(Actor& actor) {
     destroyTexturePool(actor.textures);
     actor.scene.reset();
+    actor.materialTextures.clear();
     actor.path.clear();
 }
 
@@ -309,12 +430,14 @@ bool loadStage() {
 
     for (const auto& path : candidates) {
         try {
-            auto scene = std::make_unique<Scene>(Scene::parse(gApp.assets.extractBch(path)));
+            const auto raw = gApp.assets.extractBch(path);
+            auto scene = std::make_unique<Scene>(Scene::parse(raw));
             uploadSceneTextures(gApp.stageTextures, *scene);
             if (scene->meshes().empty() || rejectStageGeometry(path)) continue;
 
             StagePart part;
             part.path = path;
+            part.materialTextures = extractMaterialTextureNames(raw);
             part.scene = std::move(scene);
             if (!computeSceneBounds(*part.scene, part.min, part.max)) continue;
 
@@ -348,7 +471,7 @@ bool loadStage() {
         }
     }
 
-    loadExternalTextures(directory, gApp.stageTextures);
+    loadExternalTexturesForStage(gApp.stageTextures);
     return haveGeometry;
 }
 
@@ -359,8 +482,8 @@ void computeArena() {
     const float cx = (gApp.stageMin.x + gApp.stageMax.x) * .5f;
     const float cz = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
 
-    gApp.arenaHalfX = sx * .20f;
-    gApp.arenaHalfZ = sz * .20f;
+    gApp.arenaHalfX = sx * .24f;
+    gApp.arenaHalfZ = sz * .24f;
     gApp.arenaCenter = {cx, 0.0f, cz};
 
     const float quantum = std::max(.0001f, sy * .001f);
@@ -373,7 +496,7 @@ void computeArena() {
         for (const auto& mesh : part.scene->meshes()) {
             for (const auto& vertex : mesh.vertices) {
                 const auto p = part.scene->skin(vertex, pose);
-                if (std::abs(p.x - cx) > gApp.arenaHalfX * .82f || std::abs(p.z - cz) > gApp.arenaHalfZ * .82f) continue;
+                if (std::abs(p.x - cx) > gApp.arenaHalfX * .86f || std::abs(p.z - cz) > gApp.arenaHalfZ * .86f) continue;
                 const long long key = static_cast<long long>(std::llround(p.y / quantum));
                 auto& bucket = buckets[key];
                 ++bucket.count;
@@ -421,10 +544,13 @@ bool loadActor(Actor& actor,
     if (modelPath.empty()) return false;
 
     try {
+        const auto raw = gApp.assets.extractBch(modelPath);
         actor.path = modelPath;
-        actor.scene = std::make_unique<Scene>(Scene::parse(gApp.assets.extractBch(modelPath)));
+        actor.materialTextures = extractMaterialTextureNames(raw);
+        actor.scene = std::make_unique<Scene>(Scene::parse(raw));
         if (!actor.scene || actor.scene->meshes().empty()) return false;
-        if (!computeSceneBounds(*actor.scene, actor.min, actor.max)) return false;
+        if (!computeRobustSceneBounds(*actor.scene, actor.min, actor.max) &&
+            !computeSceneBounds(*actor.scene, actor.min, actor.max)) return false;
         uploadSceneTextures(actor.textures, *actor.scene);
 
         const std::string directory = parentPath(lowerAscii(modelPath));
@@ -436,7 +562,7 @@ bool loadActor(Actor& actor,
             } catch (...) {
             }
         }
-        loadExternalTextures(directory, actor.textures);
+        loadExternalTexturesForPokemon(modelPath, actor.textures);
         return true;
     } catch (...) {
         destroyActor(actor);
@@ -445,13 +571,15 @@ bool loadActor(Actor& actor,
 }
 
 void placeActors() {
-    const float usable = std::max(.001f, std::min(gApp.arenaHalfX, gApp.arenaHalfZ));
+    const float arenaWidth = std::max(.001f, gApp.arenaHalfX * 2.0f);
+    const float arenaDepth = std::max(.001f, gApp.arenaHalfZ * 2.0f);
+    const float targetHeight = std::min(arenaWidth, arenaDepth) * .16f;
+
     auto place = [&](Actor& actor, float side, float yaw) {
         const float height = std::max(.001f, actor.max.y - actor.min.y);
-        const float targetHeight = usable * .34f;
         actor.scale = targetHeight / height;
-        actor.position = {gApp.arenaCenter.x + side * gApp.arenaHalfX * .42f,
-                          gApp.arenaFloorY,
+        actor.position = {gApp.arenaCenter.x + side * gApp.arenaHalfX * .36f,
+                          gApp.arenaFloorY + targetHeight * .02f,
                           gApp.arenaCenter.z};
         actor.yawDeg = yaw;
     };
@@ -459,27 +587,39 @@ void placeActors() {
     place(gApp.opponent, 1.0f, -90.0f);
 }
 
-GLuint materialTextureId(const Scene& scene, const TexturePool& pool, std::uint16_t materialId) {
-    if (materialId >= scene.materials().size()) return 0;
-    const Material& material = scene.materials()[materialId];
+GLuint materialTextureId(const Scene& scene,
+                         const TexturePool& pool,
+                         const std::vector<MaterialTextureNames>& bindings,
+                         std::uint16_t materialId) {
+    if (materialId < bindings.size()) {
+        for (const auto& name : bindings[materialId]) {
+            if (const GLuint id = lookupTexture(pool, name)) return id;
+        }
+    }
+    if (materialId < scene.materials().size()) {
+        const Material& material = scene.materials()[materialId];
+        if (const GLuint id = lookupTexture(pool, material.textureName)) return id;
+    }
     if (const auto* texture = scene.textureForMaterial(materialId)) {
         if (const GLuint id = lookupTexture(pool, texture->name)) return id;
     }
-    return lookupTexture(pool, material.textureName);
+    return 0;
 }
 
-void drawScene(const Scene& scene, const TexturePool& pool) {
+void drawScene(const Scene& scene,
+               const TexturePool& pool,
+               const std::vector<MaterialTextureNames>& bindings) {
     const auto pose = scene.samplePose(nullptr, 0.0f);
     for (const auto& mesh : scene.meshes()) {
         const Material* material = mesh.materialId < scene.materials().size() ? &scene.materials()[mesh.materialId] : nullptr;
-        const GLuint textureId = materialTextureId(scene, pool, mesh.materialId);
+        const GLuint textureId = materialTextureId(scene, pool, bindings, mesh.materialId);
         if (textureId) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, textureId);
             glColor4f(1, 1, 1, 1);
         } else {
             glDisable(GL_TEXTURE_2D);
-            glColor4f(.60f, .60f, .60f, 1.0f);
+            glColor4f(.58f, .58f, .58f, 1.0f);
         }
 
         glBegin(GL_TRIANGLES);
@@ -506,25 +646,28 @@ void drawActor(const Actor& actor) {
     glRotatef(actor.yawDeg, 0, 1, 0);
     glScalef(actor.scale, actor.scale, actor.scale);
     glTranslatef(-cx, -actor.min.y, -cz);
-    drawScene(*actor.scene, actor.textures);
+    drawScene(*actor.scene, actor.textures, actor.materialTextures);
     glPopMatrix();
 }
 
+float arenaSpan() {
+    return std::max(.001f, std::max(gApp.arenaHalfX * 2.0f, gApp.arenaHalfZ * 2.0f));
+}
+
 void resetView() {
-    gApp.zoom = 8.0f;
-    gApp.yawDeg = 0.0f;
-    gApp.pitchDeg = 0.0f;
+    gApp.cameraDistance = arenaSpan() * 1.45f;
+    gApp.cameraYawDeg = 45.0f;
+    gApp.cameraPitchDeg = 27.0f;
     gApp.panX = 0.0f;
     gApp.panZ = 0.0f;
 }
 
 void updateContinuous(float dt) {
     bool changed = false;
-    const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
-    const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
-    const float angle = (-45.0f + gApp.yawDeg) * kPi / 180.0f;
-    const Vec3 right{std::cos(angle), 0.0f, std::sin(angle)};
-    const Vec3 forward{std::sin(angle), 0.0f, -std::cos(angle)};
+    const float span = arenaSpan();
+    const float yaw = gApp.cameraYawDeg * kPi / 180.0f;
+    const Vec3 right{std::cos(yaw), 0.0f, -std::sin(yaw)};
+    const Vec3 forward{-std::sin(yaw), 0.0f, -std::cos(yaw)};
 
     float camR = 0.0f, camF = 0.0f;
     if (gApp.keys['A']) camR -= 1.0f;
@@ -532,11 +675,13 @@ void updateContinuous(float dt) {
     if (gApp.keys['W']) camF += 1.0f;
     if (gApp.keys['S']) camF -= 1.0f;
     if (camR != 0.0f || camF != 0.0f) {
-        const float speed = std::min(sx, sz) * .38f / std::max(1.0f, std::sqrt(gApp.zoom / 8.0f));
+        const float speed = span * .75f * std::max(.45f, gApp.cameraDistance / (span * 1.45f));
         gApp.panX += (right.x * camR + forward.x * camF) * speed * dt;
         gApp.panZ += (right.z * camR + forward.z * camF) * speed * dt;
-        gApp.panX = std::clamp(gApp.panX, -sx, sx);
-        gApp.panZ = std::clamp(gApp.panZ, -sz, sz);
+        const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
+        const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
+        gApp.panX = std::clamp(gApp.panX, -sx * .45f, sx * .45f);
+        gApp.panZ = std::clamp(gApp.panZ, -sz * .45f, sz * .45f);
         changed = true;
     }
 
@@ -546,17 +691,17 @@ void updateContinuous(float dt) {
     if (gApp.keys[VK_UP]) actorF += 1.0f;
     if (gApp.keys[VK_DOWN]) actorF -= 1.0f;
     if ((actorR != 0.0f || actorF != 0.0f) && gApp.player.scene) {
-        const float speed = std::min(gApp.arenaHalfX, gApp.arenaHalfZ) * 1.1f;
+        const float speed = span * .34f;
         const float dx = right.x * actorR + forward.x * actorF;
         const float dz = right.z * actorR + forward.z * actorF;
         gApp.player.position.x += dx * speed * dt;
         gApp.player.position.z += dz * speed * dt;
         gApp.player.position.x = std::clamp(gApp.player.position.x,
-            gApp.arenaCenter.x - gApp.arenaHalfX * .88f,
-            gApp.arenaCenter.x + gApp.arenaHalfX * .88f);
+            gApp.arenaCenter.x - gApp.arenaHalfX * .84f,
+            gApp.arenaCenter.x + gApp.arenaHalfX * .84f);
         gApp.player.position.z = std::clamp(gApp.player.position.z,
-            gApp.arenaCenter.z - gApp.arenaHalfZ * .88f,
-            gApp.arenaCenter.z + gApp.arenaHalfZ * .88f);
+            gApp.arenaCenter.z - gApp.arenaHalfZ * .84f,
+            gApp.arenaCenter.z + gApp.arenaHalfZ * .84f);
         gApp.player.yawDeg = std::atan2(dx, dz) * 180.0f / kPi;
         changed = true;
     }
@@ -572,47 +717,56 @@ void render() {
     GetClientRect(gApp.hwnd, &rc);
     const int width = std::max(1L, rc.right - rc.left);
     const int height = std::max(1L, rc.bottom - rc.top);
-    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    const double aspect = static_cast<double>(width) / static_cast<double>(height);
 
     glViewport(0, 0, width, height);
-    glClearColor(.55f, .78f, .91f, 1.0f);
+    glClearColor(.55f, .70f, .80f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    const float stageSpan = std::max({
+        std::max(.001f, gApp.stageMax.x - gApp.stageMin.x),
+        std::max(.001f, gApp.stageMax.y - gApp.stageMin.y),
+        std::max(.001f, gApp.stageMax.z - gApp.stageMin.z)
+    });
+    const float nearPlane = std::max(.001f, arenaSpan() * .002f);
+    const float farPlane = std::max(stageSpan * 30.0f, gApp.cameraDistance * 30.0f);
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    const float halfH = 10.0f;
-    const float halfW = halfH * aspect;
-    glOrtho(-halfW, halfW, -halfH, halfH, -5000.0f, 5000.0f);
+    gluPerspective(58.0, aspect, nearPlane, farPlane);
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    if (!gApp.parts.empty()) {
-        const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
-        const float sy = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
-        const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
-        const float projectedHeight = std::max(.001f, sy * .58f + sz * .82f);
-        const float fitX = (halfW * 2.0f * .96f) / sx;
-        const float fitY = (halfH * 2.0f * .94f) / projectedHeight;
-        const float fit = std::min(fitX, fitY) * gApp.zoom;
+    const float yaw = gApp.cameraYawDeg * kPi / 180.0f;
+    const float pitch = gApp.cameraPitchDeg * kPi / 180.0f;
+    const float cp = std::cos(pitch);
+    const float targetLift = std::min(gApp.arenaHalfX, gApp.arenaHalfZ) * .16f;
+    const Vec3 target{
+        gApp.arenaCenter.x + gApp.panX,
+        gApp.arenaFloorY + targetLift,
+        gApp.arenaCenter.z + gApp.panZ
+    };
+    const Vec3 eye{
+        target.x + std::sin(yaw) * cp * gApp.cameraDistance,
+        target.y + std::sin(pitch) * gApp.cameraDistance,
+        target.z + std::cos(yaw) * cp * gApp.cameraDistance
+    };
 
-        const float cx = (gApp.stageMin.x + gApp.stageMax.x) * .5f + gApp.panX;
-        const float cy = (gApp.stageMin.y + gApp.stageMax.y) * .5f;
-        const float cz = (gApp.stageMin.z + gApp.stageMax.z) * .5f + gApp.panZ;
+    gluLookAt(eye.x, eye.y, eye.z,
+              target.x, target.y, target.z,
+              0.0, 1.0, 0.0);
 
-        glScalef(fit, fit, fit);
-        glRotatef(55.0f + gApp.pitchDeg, 1, 0, 0);
-        glRotatef(-45.0f + gApp.yawDeg, 0, 1, 0);
-        glTranslatef(-cx, -cy, -cz);
-
-        for (auto& part : gApp.parts) if (part.scene) drawScene(*part.scene, gApp.stageTextures);
-        drawActor(gApp.player);
-        drawActor(gApp.opponent);
+    for (auto& part : gApp.parts) {
+        if (part.scene) drawScene(*part.scene, gApp.stageTextures, part.materialTextures);
     }
+    drawActor(gApp.player);
+    drawActor(gApp.opponent);
 
     SwapBuffers(gApp.dc);
 }
@@ -719,8 +873,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const int dx = now.x - gApp.lastMouse.x;
                 const int dy = now.y - gApp.lastMouse.y;
                 gApp.lastMouse = now;
-                gApp.yawDeg += static_cast<float>(dx) * .35f;
-                gApp.pitchDeg = std::clamp(gApp.pitchDeg + static_cast<float>(dy) * .30f, -50.0f, 35.0f);
+                gApp.cameraYawDeg += static_cast<float>(dx) * .35f;
+                gApp.cameraPitchDeg = std::clamp(gApp.cameraPitchDeg - static_cast<float>(dy) * .28f, 4.0f, 76.0f);
                 render();
             }
             return 0;
@@ -733,7 +887,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         case WM_MOUSEWHEEL: {
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.25f : .80f), .20f, 400.0f);
+            const float span = arenaSpan();
+            const float minDistance = std::max(.01f, span * .18f);
+            const float maxDistance = std::max(span * 10.0f,
+                std::max(gApp.stageMax.x - gApp.stageMin.x, gApp.stageMax.z - gApp.stageMin.z) * 3.0f);
+            gApp.cameraDistance = std::clamp(gApp.cameraDistance * (delta > 0 ? .82f : 1.22f), minDistance, maxDistance);
             render();
             return 0;
         }
@@ -746,7 +904,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (wParam < 256) gApp.keys[wParam] = false;
             return 0;
         case WM_KILLFOCUS:
-            std::fill(std::begin(gApp.keys), std::end(gApp.keys), false);
+            std::fill_n(gApp.keys, 256, false);
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, kUpdateTimer);
