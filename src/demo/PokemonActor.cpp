@@ -131,6 +131,7 @@ void PokemonActor::destroy() {
     idleIndex_ = currentIndex_ = nextAlternate_ = 0;
     frame_ = stateTime_ = 0.0f;
     playingIdle_ = true;
+    verticalOffset_ = 0.0f;
 }
 
 void PokemonActor::configureAnimationCycle() {
@@ -195,6 +196,7 @@ void PokemonActor::place(const ArenaView& arena, float side, float yawDegrees) {
                  arena.floorY,
                  arena.center.z};
     yawDeg_ = yawDegrees;
+    verticalOffset_ = 0.0f;
 }
 
 bool PokemonActor::move(float rightAmount, float forwardAmount, float cameraYawDegrees, float dt, const ArenaView& arena) {
@@ -218,7 +220,7 @@ void PokemonActor::draw() const {
     const float cx = (min_.x + max_.x) * .5f;
     const float cz = (min_.z + max_.z) * .5f;
     glPushMatrix();
-    glTranslatef(position_.x, position_.y, position_.z);
+    glTranslatef(position_.x, position_.y + verticalOffset_, position_.z);
     glRotatef(yawDeg_, 0, 1, 0);
     glTranslatef(-cx, -min_.y, -cz);
     drawScene(*scene_, textures_, materialTextures_, currentAnimation(), frame_);
