@@ -6,6 +6,7 @@
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
@@ -39,7 +40,11 @@ struct App {
     std::vector<StagePart> parts;
     Vec3 stageMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 stageMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    float zoom = 4.5f;
+    float zoom = 6.0f;
+    float yawDeg = 0.0f;
+    float pitchDeg = 0.0f;
+    bool dragging = false;
+    POINT lastMouse{};
 };
 
 App gApp;
@@ -277,6 +282,12 @@ void drawPart(StagePart& part) {
     glDisable(GL_TEXTURE_2D);
 }
 
+void resetView() {
+    gApp.zoom = 6.0f;
+    gApp.yawDeg = 0.0f;
+    gApp.pitchDeg = 0.0f;
+}
+
 void render() {
     if (!gApp.hwnd || !gApp.gl) return;
     wglMakeCurrent(gApp.dc, gApp.gl);
@@ -319,8 +330,8 @@ void render() {
         const float cz = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
 
         glScalef(fit, fit, fit);
-        glRotatef(55.0f, 1, 0, 0);
-        glRotatef(-45.0f, 0, 1, 0);
+        glRotatef(55.0f + gApp.pitchDeg, 1, 0, 0);
+        glRotatef(-45.0f + gApp.yawDeg, 0, 1, 0);
         glTranslatef(-cx, -cy, -cz);
 
         for (auto& part : gApp.parts) drawPart(part);
@@ -372,6 +383,14 @@ std::filesystem::path executableDirectory() {
     return std::filesystem::path(buffer).parent_path();
 }
 
+int mouseX(LPARAM lParam) {
+    return static_cast<int>(static_cast<short>(LOWORD(lParam)));
+}
+
+int mouseY(LPARAM lParam) {
+    return static_cast<int>(static_cast<short>(HIWORD(lParam)));
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE: {
@@ -387,6 +406,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"El bundle no contiene un stage BCH utilizable.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
                 return -1;
             }
+            resetView();
             return 0;
         }
         case WM_SIZE:
@@ -401,13 +421,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        case WM_LBUTTONDOWN:
+            gApp.dragging = true;
+            gApp.lastMouse = {mouseX(lParam), mouseY(lParam)};
+            SetCapture(hwnd);
+            return 0;
+        case WM_MOUSEMOVE:
+            if (gApp.dragging) {
+                const POINT now{mouseX(lParam), mouseY(lParam)};
+                const int dx = now.x - gApp.lastMouse.x;
+                const int dy = now.y - gApp.lastMouse.y;
+                gApp.lastMouse = now;
+                gApp.yawDeg += static_cast<float>(dx) * .35f;
+                gApp.pitchDeg = std::clamp(gApp.pitchDeg + static_cast<float>(dy) * .30f, -50.0f, 35.0f);
+                render();
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            gApp.dragging = false;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            gApp.dragging = false;
+            return 0;
         case WM_MOUSEWHEEL: {
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.18f : .85f), .5f, 20.0f);
+            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.25f : .80f), .25f, 100.0f);
             render();
             return 0;
         }
         case WM_KEYDOWN:
+            if (wParam == 'R') {
+                resetView();
+                render();
+                return 0;
+            }
             if (wParam == VK_ESCAPE) DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
