@@ -3,6 +3,7 @@
 #include <GL/gl.h>
 
 #include "bch/BchScene.h"
+#include "ctr/Bclim.h"
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
@@ -27,6 +28,12 @@ using promptemon::bch::Vec3;
 using promptemon::storage::RomAssetCache;
 
 constexpr float kPi = 3.14159265358979323846f;
+constexpr UINT_PTR kUpdateTimer = 1;
+
+struct TexturePool {
+    std::vector<GLuint> owned;
+    std::unordered_map<std::string, GLuint> aliases;
+};
 
 struct StagePart {
     std::string path;
@@ -38,10 +45,11 @@ struct StagePart {
 struct Actor {
     std::string path;
     std::unique_ptr<Scene> scene;
-    std::unordered_map<std::string, GLuint> textures;
+    TexturePool textures;
     Vec3 min{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 max{-FLT_MAX, -FLT_MAX, -FLT_MAX};
     Vec3 position{};
+    float scale = 1.0f;
     float yawDeg = 0.0f;
 };
 
@@ -52,8 +60,7 @@ struct App {
     RomAssetCache assets;
 
     std::vector<StagePart> parts;
-    std::unordered_map<std::string, GLuint> stageTextureStorage;
-    std::unordered_map<std::string, GLuint> stageTextureAliases;
+    TexturePool stageTextures;
     Vec3 stageMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 stageMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
 
@@ -71,6 +78,8 @@ struct App {
     float panZ = 0.0f;
     bool dragging = false;
     POINT lastMouse{};
+    bool keys[256]{};
+    ULONGLONG lastTick = 0;
 };
 
 App gApp;
@@ -80,6 +89,11 @@ std::string lowerAscii(std::string value) {
         return static_cast<char>(std::tolower(c));
     });
     return value;
+}
+
+bool endsWith(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 bool containsAny(const std::string& value, const std::initializer_list<const char*> tokens) {
@@ -119,8 +133,7 @@ bool isPokemonResource(const std::string& path) {
 
 bool rejectStageGeometry(const std::string& path) {
     const std::string leaf = leafName(path);
-    return leaf.rfind("attr", 0) == 0 ||
-           leaf.rfind("col_", 0) == 0 ||
+    return leaf.rfind("attr", 0) == 0 || leaf.rfind("col_", 0) == 0 ||
            containsAny(leaf, {"collision", "collider", "sky", "skydome", "background",
                               "backdrop", "farbg", "far_", "dummy", "debug"});
 }
@@ -137,8 +150,7 @@ std::string chooseStageAnchor(const std::vector<std::string>& models) {
     }
     for (const auto& path : models) {
         const std::string p = lowerAscii(path);
-        if (isStageResource(path) && p.find("n001") != std::string::npos && !rejectStageGeometry(path))
-            return path;
+        if (isStageResource(path) && p.find("n001") != std::string::npos && !rejectStageGeometry(path)) return path;
     }
     for (const auto& path : models) {
         if (isStageResource(path) && preferredGround(path) && !rejectStageGeometry(path)) return path;
@@ -179,88 +191,108 @@ bool computeSceneBounds(const Scene& scene, Vec3& minOut, Vec3& maxOut) {
     return found;
 }
 
-void deleteTextureMap(std::unordered_map<std::string, GLuint>& textures) {
-    for (const auto& entry : textures) {
-        GLuint id = entry.second;
-        if (id) glDeleteTextures(1, &id);
-    }
-    textures.clear();
+void destroyTexturePool(TexturePool& pool) {
+    for (GLuint id : pool.owned) if (id) glDeleteTextures(1, &id);
+    pool.owned.clear();
+    pool.aliases.clear();
 }
 
-void uploadTextureList(const std::vector<Texture>& textures,
-                       std::unordered_map<std::string, GLuint>& destination) {
+void registerAliases(TexturePool& pool, const std::string& key, GLuint id) {
+    const std::string exact = lowerAscii(key);
+    pool.aliases.emplace(exact, id);
+    pool.aliases.emplace(leafName(exact), id);
+    pool.aliases.emplace(stemName(exact), id);
+}
+
+void uploadRgba(TexturePool& pool, const std::string& key, int width, int height,
+                const std::vector<std::uint8_t>& rgba) {
+    if (width <= 0 || height <= 0 || rgba.size() != static_cast<std::size_t>(width) * height * 4u) return;
+    if (pool.aliases.find(lowerAscii(key)) != pool.aliases.end()) return;
+
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    if (!id) return;
+    glBindTexture(GL_TEXTURE_2D, id);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    for (const auto& texture : textures) {
-        if (texture.width <= 0 || texture.height <= 0 || texture.rgba.empty()) continue;
-        const std::string key = lowerAscii(texture.name);
-        if (destination.find(key) != destination.end()) continue;
-
-        GLuint id = 0;
-        glGenTextures(1, &id);
-        if (!id) continue;
-        glBindTexture(GL_TEXTURE_2D, id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texture.width, texture.height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, texture.rgba.data());
-        destination[key] = id;
-    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindTexture(GL_TEXTURE_2D, 0);
+    pool.owned.push_back(id);
+    registerAliases(pool, key, id);
 }
 
-void rebuildStageTextureAliases() {
-    gApp.stageTextureAliases.clear();
-    for (const auto& entry : gApp.stageTextureStorage) {
-        gApp.stageTextureAliases.emplace(entry.first, entry.second);
-        gApp.stageTextureAliases.emplace(leafName(entry.first), entry.second);
-        gApp.stageTextureAliases.emplace(stemName(entry.first), entry.second);
+void uploadSceneTextures(TexturePool& pool, const Scene& scene) {
+    for (const Texture& texture : scene.textures()) {
+        uploadRgba(pool, texture.name, texture.width, texture.height, texture.rgba);
     }
 }
 
-GLuint lookupTexture(const std::unordered_map<std::string, GLuint>& map,
-                     const std::string& requested) {
+void loadExternalTextures(const std::string& directory, TexturePool& pool) {
+    const std::string prefix = lowerAscii(directory);
+    for (const auto& resource : gApp.assets.resources()) {
+        const std::string path = lowerAscii(resource);
+        if (path.rfind(prefix, 0) != 0) continue;
+        try {
+            const auto bytes = gApp.assets.extractResource(resource);
+            if (!promptemon::ctr::isBclim(bytes)) continue;
+            const auto image = promptemon::ctr::decodeBclim(bytes);
+            if (!image.valid()) continue;
+            uploadRgba(pool, resource, image.width, image.height, image.rgba);
+        } catch (...) {
+        }
+    }
+}
+
+GLuint lookupTexture(const TexturePool& pool, const std::string& requested) {
     if (requested.empty()) return 0;
     const std::string exact = lowerAscii(requested);
-    const std::string leaf = leafName(requested);
-    const std::string stem = stemName(requested);
+    const std::string leaf = leafName(exact);
+    const std::string stem = stemName(exact);
 
-    auto it = map.find(exact);
-    if (it != map.end()) return it->second;
-    it = map.find(leaf);
-    if (it != map.end()) return it->second;
-    it = map.find(stem);
-    if (it != map.end()) return it->second;
+    auto it = pool.aliases.find(exact);
+    if (it != pool.aliases.end()) return it->second;
+    it = pool.aliases.find(leaf);
+    if (it != pool.aliases.end()) return it->second;
+    it = pool.aliases.find(stem);
+    if (it != pool.aliases.end()) return it->second;
 
-    for (const auto& entry : map) {
-        if (leafName(entry.first) == leaf || stemName(entry.first) == stem) return entry.second;
+    if (stem.size() >= 4) {
+        for (const auto& entry : pool.aliases) {
+            const std::string other = stemName(entry.first);
+            if (other.size() >= 4 && (other.find(stem) != std::string::npos || stem.find(other) != std::string::npos))
+                return entry.second;
+        }
     }
     return 0;
 }
 
-void destroyStage() {
-    deleteTextureMap(gApp.stageTextureStorage);
-    gApp.stageTextureAliases.clear();
-    gApp.parts.clear();
-}
-
 void destroyActor(Actor& actor) {
-    deleteTextureMap(actor.textures);
+    destroyTexturePool(actor.textures);
     actor.scene.reset();
     actor.path.clear();
+}
+
+void destroyStage() {
+    destroyTexturePool(gApp.stageTextures);
+    gApp.parts.clear();
 }
 
 bool loadStage() {
     const auto models = gApp.assets.modelResources();
     const std::string anchor = chooseStageAnchor(models);
     if (anchor.empty()) return false;
-
     const std::string directory = parentPath(lowerAscii(anchor));
+
+    destroyStage();
+    gApp.stageMin = {FLT_MAX, FLT_MAX, FLT_MAX};
+    gApp.stageMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
     std::vector<std::string> candidates;
     for (const auto& path : models) {
-        const std::string p = lowerAscii(path);
-        if (p.rfind(directory, 0) == 0) candidates.push_back(path);
+        if (lowerAscii(path).rfind(directory, 0) == 0) candidates.push_back(path);
     }
     if (candidates.empty()) candidates.push_back(anchor);
 
@@ -270,24 +302,15 @@ bool loadStage() {
         return preferredGround(a) && !preferredGround(b);
     });
 
-    destroyStage();
-    gApp.stageMin = {FLT_MAX, FLT_MAX, FLT_MAX};
-    gApp.stageMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-
-    bool haveAnchorBounds = false;
+    bool haveAnchor = false;
     bool haveGeometry = false;
-    float anchorX = 0.0f;
-    float anchorZ = 0.0f;
+    float anchorX = 0.0f, anchorZ = 0.0f;
     Vec3 anchorCenter{};
 
     for (const auto& path : candidates) {
         try {
             auto scene = std::make_unique<Scene>(Scene::parse(gApp.assets.extractBch(path)));
-
-            // Keep textures from every BCH in the stage directory even when its geometry
-            // is a sky/collision/oversized shell. Other meshes can legitimately reference them.
-            uploadTextureList(scene->textures(), gApp.stageTextureStorage);
-
+            uploadSceneTextures(gApp.stageTextures, *scene);
             if (scene->meshes().empty() || rejectStageGeometry(path)) continue;
 
             StagePart part;
@@ -295,22 +318,22 @@ bool loadStage() {
             part.scene = std::move(scene);
             if (!computeSceneBounds(*part.scene, part.min, part.max)) continue;
 
-            const float sx = std::max(0.001f, part.max.x - part.min.x);
-            const float sz = std::max(0.001f, part.max.z - part.min.z);
+            const float sx = std::max(.001f, part.max.x - part.min.x);
+            const float sz = std::max(.001f, part.max.z - part.min.z);
             const Vec3 center{(part.min.x + part.max.x) * .5f,
                               (part.min.y + part.max.y) * .5f,
                               (part.min.z + part.max.z) * .5f};
 
-            if (!haveAnchorBounds) {
+            if (!haveAnchor) {
                 anchorX = sx;
                 anchorZ = sz;
                 anchorCenter = center;
-                haveAnchorBounds = true;
+                haveAnchor = true;
             } else {
                 const float dx = std::abs(center.x - anchorCenter.x);
                 const float dz = std::abs(center.z - anchorCenter.z);
-                if (sx > anchorX * 4.0f || sz > anchorZ * 4.0f ||
-                    dx > anchorX * 2.5f || dz > anchorZ * 2.5f) continue;
+                if (sx > anchorX * 4.0f || sz > anchorZ * 4.0f || dx > anchorX * 2.5f || dz > anchorZ * 2.5f)
+                    continue;
             }
 
             gApp.stageMin.x = std::min(gApp.stageMin.x, part.min.x);
@@ -325,12 +348,13 @@ bool loadStage() {
         }
     }
 
-    rebuildStageTextureAliases();
+    loadExternalTextures(directory, gApp.stageTextures);
     return haveGeometry;
 }
 
 void computeArena() {
     const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
+    const float sy = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
     const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
     const float cx = (gApp.stageMin.x + gApp.stageMax.x) * .5f;
     const float cz = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
@@ -339,129 +363,123 @@ void computeArena() {
     gApp.arenaHalfZ = sz * .20f;
     gApp.arenaCenter = {cx, 0.0f, cz};
 
-    std::vector<float> floorSamples;
+    const float quantum = std::max(.0001f, sy * .001f);
+    struct Bucket { int count = 0; double sum = 0.0; };
+    std::unordered_map<long long, Bucket> buckets;
+
     for (const auto& part : gApp.parts) {
         if (!part.scene) continue;
         const auto pose = part.scene->samplePose(nullptr, 0.0f);
         for (const auto& mesh : part.scene->meshes()) {
             for (const auto& vertex : mesh.vertices) {
                 const auto p = part.scene->skin(vertex, pose);
-                if (std::abs(p.x - cx) <= gApp.arenaHalfX * .90f &&
-                    std::abs(p.z - cz) <= gApp.arenaHalfZ * .90f) {
-                    floorSamples.push_back(p.y);
-                }
+                if (std::abs(p.x - cx) > gApp.arenaHalfX * .82f || std::abs(p.z - cz) > gApp.arenaHalfZ * .82f) continue;
+                const long long key = static_cast<long long>(std::llround(p.y / quantum));
+                auto& bucket = buckets[key];
+                ++bucket.count;
+                bucket.sum += p.y;
             }
         }
     }
 
-    if (!floorSamples.empty()) {
-        std::sort(floorSamples.begin(), floorSamples.end());
-        // The ring floor is the broad lower horizontal surface; use a low percentile,
-        // not the previous one-third sample which could select a wall/railing height.
-        const std::size_t index = std::min(floorSamples.size() - 1, floorSamples.size() / 12);
-        gApp.arenaFloorY = floorSamples[index];
-    } else {
-        gApp.arenaFloorY = gApp.stageMin.y;
+    int bestCount = 0;
+    float bestY = gApp.stageMin.y;
+    for (const auto& entry : buckets) {
+        if (entry.second.count > bestCount) {
+            bestCount = entry.second.count;
+            bestY = static_cast<float>(entry.second.sum / entry.second.count);
+        }
     }
-    gApp.arenaCenter.y = gApp.arenaFloorY;
+    gApp.arenaFloorY = bestY;
+    gApp.arenaCenter.y = bestY;
 }
 
-std::size_t vertexCount(const Scene& scene) {
-    std::size_t total = 0;
-    for (const auto& mesh : scene.meshes()) total += mesh.vertices.size();
-    return total;
+std::string findCanonicalPokemon(const std::vector<std::string>& models,
+                                 const std::initializer_list<const char*> suffixes,
+                                 const std::initializer_list<const char*> tokens) {
+    for (const char* suffixRaw : suffixes) {
+        const std::string suffix = lowerAscii(suffixRaw);
+        for (const auto& path : models) {
+            const std::string p = lowerAscii(path);
+            if (isPokemonResource(path) && endsWith(p, suffix)) return path;
+        }
+    }
+    for (const auto& path : models) {
+        const std::string p = lowerAscii(path);
+        if (!isPokemonResource(path)) continue;
+        for (const char* token : tokens) if (p.find(token) != std::string::npos) return path;
+    }
+    return {};
 }
 
-bool loadActor(Actor& actor, const std::initializer_list<const char*> keys) {
+bool loadActor(Actor& actor,
+               const std::initializer_list<const char*> suffixes,
+               const std::initializer_list<const char*> tokens) {
     destroyActor(actor);
     const auto models = gApp.assets.modelResources();
+    const std::string modelPath = findCanonicalPokemon(models, suffixes, tokens);
+    if (modelPath.empty()) return false;
 
-    std::vector<std::string> candidates;
-    for (const auto& path : models) {
-        if (!isPokemonResource(path)) continue;
-        const std::string p = lowerAscii(path);
-        for (const char* key : keys) {
-            if (p.find(key) != std::string::npos) {
-                candidates.push_back(path);
-                break;
+    try {
+        actor.path = modelPath;
+        actor.scene = std::make_unique<Scene>(Scene::parse(gApp.assets.extractBch(modelPath)));
+        if (!actor.scene || actor.scene->meshes().empty()) return false;
+        if (!computeSceneBounds(*actor.scene, actor.min, actor.max)) return false;
+        uploadSceneTextures(actor.textures, *actor.scene);
+
+        const std::string directory = parentPath(lowerAscii(modelPath));
+        for (const auto& path : models) {
+            if (lowerAscii(path).rfind(directory, 0) != 0 || path == modelPath) continue;
+            try {
+                Scene companion = Scene::parse(gApp.assets.extractBch(path));
+                uploadSceneTextures(actor.textures, companion);
+            } catch (...) {
             }
         }
+        loadExternalTextures(directory, actor.textures);
+        return true;
+    } catch (...) {
+        destroyActor(actor);
+        return false;
     }
-    if (candidates.empty()) return false;
-
-    std::size_t bestVertices = 0;
-    for (const auto& path : candidates) {
-        try {
-            auto scene = std::make_unique<Scene>(Scene::parse(gApp.assets.extractBch(path)));
-            const std::size_t count = vertexCount(*scene);
-            if (count > bestVertices) {
-                bestVertices = count;
-                actor.path = path;
-                actor.scene = std::move(scene);
-            }
-        } catch (...) {
-        }
-    }
-    if (!actor.scene || bestVertices == 0) return false;
-    if (!computeSceneBounds(*actor.scene, actor.min, actor.max)) return false;
-
-    uploadTextureList(actor.scene->textures(), actor.textures);
-    for (const auto& path : candidates) {
-        if (path == actor.path) continue;
-        try {
-            Scene companion = Scene::parse(gApp.assets.extractBch(path));
-            uploadTextureList(companion.textures(), actor.textures);
-        } catch (...) {
-        }
-    }
-    return true;
 }
 
 void placeActors() {
-    // Rumble World stage and Pokemon resources share their native scene units.
-    // Do not normalize Pokemon to the ring size: render them at native scale.
-    gApp.player.position = {
-        gApp.arenaCenter.x - gApp.arenaHalfX * .42f,
-        gApp.arenaFloorY,
-        gApp.arenaCenter.z
+    const float usable = std::max(.001f, std::min(gApp.arenaHalfX, gApp.arenaHalfZ));
+    auto place = [&](Actor& actor, float side, float yaw) {
+        const float height = std::max(.001f, actor.max.y - actor.min.y);
+        const float targetHeight = usable * .34f;
+        actor.scale = targetHeight / height;
+        actor.position = {gApp.arenaCenter.x + side * gApp.arenaHalfX * .42f,
+                          gApp.arenaFloorY,
+                          gApp.arenaCenter.z};
+        actor.yawDeg = yaw;
     };
-    gApp.player.yawDeg = 90.0f;
-
-    gApp.opponent.position = {
-        gApp.arenaCenter.x + gApp.arenaHalfX * .42f,
-        gApp.arenaFloorY,
-        gApp.arenaCenter.z
-    };
-    gApp.opponent.yawDeg = -90.0f;
+    place(gApp.player, -1.0f, 90.0f);
+    place(gApp.opponent, 1.0f, -90.0f);
 }
 
-GLuint materialTextureId(const Scene& scene,
-                         const std::unordered_map<std::string, GLuint>& textures,
-                         std::uint16_t materialId) {
+GLuint materialTextureId(const Scene& scene, const TexturePool& pool, std::uint16_t materialId) {
     if (materialId >= scene.materials().size()) return 0;
     const Material& material = scene.materials()[materialId];
     if (const auto* texture = scene.textureForMaterial(materialId)) {
-        if (const GLuint id = lookupTexture(textures, texture->name)) return id;
+        if (const GLuint id = lookupTexture(pool, texture->name)) return id;
     }
-    return lookupTexture(textures, material.textureName);
+    return lookupTexture(pool, material.textureName);
 }
 
-void drawScene(const Scene& scene,
-               const std::unordered_map<std::string, GLuint>& textures) {
+void drawScene(const Scene& scene, const TexturePool& pool) {
     const auto pose = scene.samplePose(nullptr, 0.0f);
     for (const auto& mesh : scene.meshes()) {
-        const Material* material = mesh.materialId < scene.materials().size()
-            ? &scene.materials()[mesh.materialId]
-            : nullptr;
-        const GLuint textureId = materialTextureId(scene, textures, mesh.materialId);
-
+        const Material* material = mesh.materialId < scene.materials().size() ? &scene.materials()[mesh.materialId] : nullptr;
+        const GLuint textureId = materialTextureId(scene, pool, mesh.materialId);
         if (textureId) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, textureId);
             glColor4f(1, 1, 1, 1);
         } else {
             glDisable(GL_TEXTURE_2D);
-            glColor4f(.72f, .72f, .72f, 1.0f);
+            glColor4f(.60f, .60f, .60f, 1.0f);
         }
 
         glBegin(GL_TRIANGLES);
@@ -479,18 +497,14 @@ void drawScene(const Scene& scene,
     glDisable(GL_TEXTURE_2D);
 }
 
-void drawStagePart(StagePart& part) {
-    if (part.scene) drawScene(*part.scene, gApp.stageTextureAliases);
-}
-
-void drawActor(Actor& actor) {
+void drawActor(const Actor& actor) {
     if (!actor.scene) return;
     const float cx = (actor.min.x + actor.max.x) * .5f;
     const float cz = (actor.min.z + actor.max.z) * .5f;
-
     glPushMatrix();
     glTranslatef(actor.position.x, actor.position.y, actor.position.z);
     glRotatef(actor.yawDeg, 0, 1, 0);
+    glScalef(actor.scale, actor.scale, actor.scale);
     glTranslatef(-cx, -actor.min.y, -cz);
     drawScene(*actor.scene, actor.textures);
     glPopMatrix();
@@ -504,45 +518,50 @@ void resetView() {
     gApp.panZ = 0.0f;
 }
 
-void panCamera(float rightAmount, float forwardAmount) {
+void updateContinuous(float dt) {
+    bool changed = false;
     const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
     const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
-    const float baseStep = std::min(sx, sz) * .03f;
-    const float step = baseStep / std::max(1.0f, std::sqrt(gApp.zoom / 8.0f));
-    const float angle = (-45.0f + gApp.yawDeg) * kPi / 180.0f;
-
-    const Vec3 right{std::cos(angle), 0.0f, std::sin(angle)};
-    const Vec3 forward{std::sin(angle), 0.0f, -std::cos(angle)};
-    gApp.panX += (right.x * rightAmount + forward.x * forwardAmount) * step;
-    gApp.panZ += (right.z * rightAmount + forward.z * forwardAmount) * step;
-
-    gApp.panX = std::clamp(gApp.panX, -sx, sx);
-    gApp.panZ = std::clamp(gApp.panZ, -sz, sz);
-}
-
-void movePlayer(float rightAmount, float forwardAmount) {
-    if (!gApp.player.scene) return;
-
     const float angle = (-45.0f + gApp.yawDeg) * kPi / 180.0f;
     const Vec3 right{std::cos(angle), 0.0f, std::sin(angle)};
     const Vec3 forward{std::sin(angle), 0.0f, -std::cos(angle)};
-    const float step = std::max(.01f, std::min(gApp.arenaHalfX, gApp.arenaHalfZ) * .075f);
 
-    const float dx = right.x * rightAmount + forward.x * forwardAmount;
-    const float dz = right.z * rightAmount + forward.z * forwardAmount;
-    gApp.player.position.x += dx * step;
-    gApp.player.position.z += dz * step;
+    float camR = 0.0f, camF = 0.0f;
+    if (gApp.keys['A']) camR -= 1.0f;
+    if (gApp.keys['D']) camR += 1.0f;
+    if (gApp.keys['W']) camF += 1.0f;
+    if (gApp.keys['S']) camF -= 1.0f;
+    if (camR != 0.0f || camF != 0.0f) {
+        const float speed = std::min(sx, sz) * .38f / std::max(1.0f, std::sqrt(gApp.zoom / 8.0f));
+        gApp.panX += (right.x * camR + forward.x * camF) * speed * dt;
+        gApp.panZ += (right.z * camR + forward.z * camF) * speed * dt;
+        gApp.panX = std::clamp(gApp.panX, -sx, sx);
+        gApp.panZ = std::clamp(gApp.panZ, -sz, sz);
+        changed = true;
+    }
 
-    const float marginX = gApp.arenaHalfX * .10f;
-    const float marginZ = gApp.arenaHalfZ * .10f;
-    gApp.player.position.x = std::clamp(gApp.player.position.x,
-        gApp.arenaCenter.x - gApp.arenaHalfX + marginX,
-        gApp.arenaCenter.x + gApp.arenaHalfX - marginX);
-    gApp.player.position.z = std::clamp(gApp.player.position.z,
-        gApp.arenaCenter.z - gApp.arenaHalfZ + marginZ,
-        gApp.arenaCenter.z + gApp.arenaHalfZ - marginZ);
+    float actorR = 0.0f, actorF = 0.0f;
+    if (gApp.keys[VK_LEFT]) actorR -= 1.0f;
+    if (gApp.keys[VK_RIGHT]) actorR += 1.0f;
+    if (gApp.keys[VK_UP]) actorF += 1.0f;
+    if (gApp.keys[VK_DOWN]) actorF -= 1.0f;
+    if ((actorR != 0.0f || actorF != 0.0f) && gApp.player.scene) {
+        const float speed = std::min(gApp.arenaHalfX, gApp.arenaHalfZ) * 1.1f;
+        const float dx = right.x * actorR + forward.x * actorF;
+        const float dz = right.z * actorR + forward.z * actorF;
+        gApp.player.position.x += dx * speed * dt;
+        gApp.player.position.z += dz * speed * dt;
+        gApp.player.position.x = std::clamp(gApp.player.position.x,
+            gApp.arenaCenter.x - gApp.arenaHalfX * .88f,
+            gApp.arenaCenter.x + gApp.arenaHalfX * .88f);
+        gApp.player.position.z = std::clamp(gApp.player.position.z,
+            gApp.arenaCenter.z - gApp.arenaHalfZ * .88f,
+            gApp.arenaCenter.z + gApp.arenaHalfZ * .88f);
+        gApp.player.yawDeg = std::atan2(dx, dz) * 180.0f / kPi;
+        changed = true;
+    }
 
-    if (dx != 0.0f || dz != 0.0f) gApp.player.yawDeg = std::atan2(dx, dz) * 180.0f / kPi;
+    if (changed) InvalidateRect(gApp.hwnd, nullptr, FALSE);
 }
 
 void render() {
@@ -577,7 +596,6 @@ void render() {
         const float sy = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
         const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
         const float projectedHeight = std::max(.001f, sy * .58f + sz * .82f);
-
         const float fitX = (halfW * 2.0f * .96f) / sx;
         const float fitY = (halfH * 2.0f * .94f) / projectedHeight;
         const float fit = std::min(fitX, fitY) * gApp.zoom;
@@ -591,7 +609,7 @@ void render() {
         glRotatef(-45.0f + gApp.yawDeg, 0, 1, 0);
         glTranslatef(-cx, -cy, -cz);
 
-        for (auto& part : gApp.parts) drawStagePart(part);
+        for (auto& part : gApp.parts) if (part.scene) drawScene(*part.scene, gApp.stageTextures);
         drawActor(gApp.player);
         drawActor(gApp.opponent);
     }
@@ -614,10 +632,8 @@ bool initOpenGL(HWND hwnd) {
 
     const int format = ChoosePixelFormat(gApp.dc, &pfd);
     if (!format || !SetPixelFormat(gApp.dc, format, &pfd)) return false;
-
     gApp.gl = wglCreateContext(gApp.dc);
-    if (!gApp.gl || !wglMakeCurrent(gApp.dc, gApp.gl)) return false;
-    return true;
+    return gApp.gl && wglMakeCurrent(gApp.dc, gApp.gl);
 }
 
 void shutdownOpenGL() {
@@ -644,20 +660,14 @@ std::filesystem::path executableDirectory() {
     return std::filesystem::path(buffer).parent_path();
 }
 
-int mouseX(LPARAM lParam) {
-    return static_cast<int>(static_cast<short>(LOWORD(lParam)));
-}
-
-int mouseY(LPARAM lParam) {
-    return static_cast<int>(static_cast<short>(HIWORD(lParam)));
-}
+int mouseX(LPARAM lParam) { return static_cast<int>(static_cast<short>(LOWORD(lParam))); }
+int mouseY(LPARAM lParam) { return static_cast<int>(static_cast<short>(HIWORD(lParam))); }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE: {
             gApp.hwnd = hwnd;
             if (!initOpenGL(hwnd)) return -1;
-
             const auto bundle = executableDirectory() / L"assets" / L"resources-tx";
             if (!gApp.assets.openInstalledDirectory(bundle)) {
                 MessageBoxW(hwnd, L"No se pudo abrir assets\\resources-tx.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
@@ -667,28 +677,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"El bundle no contiene un stage BCH utilizable.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
                 return -1;
             }
-
             computeArena();
-            if (!loadActor(gApp.player, {"koratta", "rattata"}) ||
-                !loadActor(gApp.opponent, {"poppo", "pidgey"})) {
+            if (!loadActor(gApp.player, {"/koratta.bch", "/koratta_f.bch"}, {"koratta", "rattata"}) ||
+                !loadActor(gApp.opponent, {"/poppo.bch"}, {"poppo", "pidgey"})) {
                 MessageBoxW(hwnd, L"No se pudieron cargar los Pokemon Rumble requeridos para la arena.",
                             L"Promptemon Steidium", MB_OK | MB_ICONERROR);
                 return -1;
             }
             placeActors();
             resetView();
+            gApp.lastTick = GetTickCount64();
+            SetTimer(hwnd, kUpdateTimer, 16, nullptr);
             return 0;
         }
-        case WM_SIZE:
-        case WM_PAINT: {
-            if (message == WM_PAINT) {
-                PAINTSTRUCT ps{};
-                BeginPaint(hwnd, &ps);
-                render();
-                EndPaint(hwnd, &ps);
-            } else {
-                render();
+        case WM_TIMER:
+            if (wParam == kUpdateTimer) {
+                const ULONGLONG now = GetTickCount64();
+                const float dt = std::clamp(static_cast<float>(now - gApp.lastTick) / 1000.0f, 0.0f, .05f);
+                gApp.lastTick = now;
+                updateContinuous(dt);
             }
+            return 0;
+        case WM_SIZE:
+            render();
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            render();
+            EndPaint(hwnd, &ps);
             return 0;
         }
         case WM_LBUTTONDOWN:
@@ -721,22 +738,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         case WM_KEYDOWN:
-            switch (wParam) {
-                // WASD pans the inspection camera across the stage.
-                case 'W': panCamera(0.0f, 1.0f); render(); return 0;
-                case 'S': panCamera(0.0f, -1.0f); render(); return 0;
-                case 'A': panCamera(-1.0f, 0.0f); render(); return 0;
-                case 'D': panCamera(1.0f, 0.0f); render(); return 0;
-                // Arrow keys move the player's Pokemon inside the arena.
-                case VK_UP:    movePlayer(0.0f, 1.0f); render(); return 0;
-                case VK_DOWN:  movePlayer(0.0f, -1.0f); render(); return 0;
-                case VK_LEFT:  movePlayer(-1.0f, 0.0f); render(); return 0;
-                case VK_RIGHT: movePlayer(1.0f, 0.0f); render(); return 0;
-                case 'R': resetView(); render(); return 0;
-                case VK_ESCAPE: DestroyWindow(hwnd); return 0;
-            }
+            if (wParam < 256) gApp.keys[wParam] = true;
+            if (wParam == 'R') { resetView(); render(); }
+            if (wParam == VK_ESCAPE) DestroyWindow(hwnd);
+            return 0;
+        case WM_KEYUP:
+            if (wParam < 256) gApp.keys[wParam] = false;
+            return 0;
+        case WM_KILLFOCUS:
+            std::fill(std::begin(gApp.keys), std::end(gApp.keys), false);
             return 0;
         case WM_DESTROY:
+            KillTimer(hwnd, kUpdateTimer);
             shutdownOpenGL();
             PostQuitMessage(0);
             return 0;
