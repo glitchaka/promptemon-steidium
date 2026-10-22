@@ -15,8 +15,11 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -A x64
 
-      - name: Build demo and resource tools
-        run: cmake --build build --config Release --target promptemon_demo promptemon_stage_jump promptemon_resource_packager promptemon_resource_sfx
+      - name: Build demo, LAN test and resource tools
+        run: cmake --build build --config Release --target promptemon_demo promptemon_stage_jump promptemon_lan_smoke promptemon_resource_packager promptemon_resource_sfx
+
+      - name: Verify two C&C LAN sessions discover and sync jump
+        run: build/Release/promptemon_lan_smoke.exe
 
       - name: Verify Pokemon animation companions are packaged
         shell: pwsh
@@ -68,9 +71,11 @@ jobs:
           PROMPTEMON STEIDIUM - stage scene
 
           promptemon_demo.exe is the main stage prototype.
-          promptemon_stage_jump.exe is the isolated camera/stage/Pokemon jump test:
-            - one native-scale Rattata at arena center
+          promptemon_stage_jump.exe is the isolated enlarged-stage multiplayer jump test:
+            - local native-scale Rattata starts exactly at arena center
             - left click jumps
+            - automatic LAN discovery/sync using C&C-style UDP slots 8088-8095
+            - remote players appear inside the arena and their jump state is synchronized
             - right-drag rotates camera
             - mouse wheel zooms
             - R resets camera
