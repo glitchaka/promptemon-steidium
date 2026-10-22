@@ -21,6 +21,9 @@ public:
     bool move(float rightAmount, float forwardAmount, float cameraYawDegrees, float dt, const ArenaView& arena);
     void draw() const;
 
+    void setVerticalOffset(float offset) { verticalOffset_ = offset; }
+    float nativeHeight() const { return scene_ ? (max_.y - min_.y) : 0.0f; }
+
     bool ready() const { return scene_ != nullptr; }
     bool hasAnimations() const { return scene_ && !scene_->animations().empty(); }
     const std::string& path() const { return path_; }
@@ -40,6 +43,7 @@ private:
     bch::Vec3 max_{};
     bch::Vec3 position_{};
     float yawDeg_ = 0.0f;
+    float verticalOffset_ = 0.0f;
 
     std::size_t idleIndex_ = 0;
     std::vector<std::size_t> alternates_;
