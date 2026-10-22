@@ -6,10 +6,16 @@
 #include "demo/JumpController.h"
 #include "demo/PokemonActor.h"
 #include "demo/StageWorld.h"
+#include "net/CncLanSession.h"
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -17,9 +23,16 @@ using promptemon::demo::CameraController;
 using promptemon::demo::JumpController;
 using promptemon::demo::PokemonActor;
 using promptemon::demo::StageWorld;
+using promptemon::net::CncLanSession;
 using promptemon::storage::RomAssetCache;
 
 constexpr UINT_PTR kUpdateTimer = 1;
+constexpr float kPi = 3.14159265358979323846f;
+
+struct RemoteVisual {
+    std::unique_ptr<PokemonActor> actor;
+    std::uint8_t slot = 0;
+};
 
 struct App {
     HWND hwnd = nullptr;
@@ -30,9 +43,12 @@ struct App {
     CameraController camera;
     PokemonActor pokemon;
     JumpController jump;
+    CncLanSession lan;
+    std::unordered_map<std::uint32_t, RemoteVisual> remotes;
     bool rotating = false;
     POINT lastMouse{};
     ULONGLONG lastTick = 0;
+    std::size_t lastPeerCount = static_cast<std::size_t>(-1);
 };
 
 App gApp;
@@ -64,9 +80,18 @@ bool initOpenGL(HWND hwnd) {
     return gApp.gl && wglMakeCurrent(gApp.dc, gApp.gl);
 }
 
+void destroyRemoteVisuals() {
+    for (auto& entry : gApp.remotes) {
+        if (entry.second.actor) entry.second.actor->destroy();
+    }
+    gApp.remotes.clear();
+}
+
 void shutdownOpenGL() {
+    gApp.lan.stop();
     if (gApp.gl) {
         wglMakeCurrent(gApp.dc, gApp.gl);
+        destroyRemoteVisuals();
         gApp.pokemon.destroy();
         gApp.world.destroy();
         wglMakeCurrent(nullptr, nullptr);
@@ -77,6 +102,67 @@ void shutdownOpenGL() {
         ReleaseDC(gApp.hwnd, gApp.dc);
         gApp.dc = nullptr;
     }
+}
+
+void updateWindowTitle(std::size_t peerCount) {
+    if (!gApp.hwnd || peerCount == gApp.lastPeerCount) return;
+    gApp.lastPeerCount = peerCount;
+    const std::wstring title = L"Promptemon - Stage Jump LAN | slot " +
+        std::to_wstring(static_cast<unsigned>(gApp.lan.localSlot()) + 1u) +
+        L" | jugadores " + std::to_wstring(peerCount + 1u);
+    SetWindowTextW(gApp.hwnd, title.c_str());
+}
+
+void placeRemote(PokemonActor& actor, std::uint8_t slot) {
+    const float angle = (static_cast<float>(slot) / 8.0f) * (2.0f * kPi);
+    const float x = std::cos(angle) * .55f;
+    const float z = std::sin(angle) * .55f;
+    const float yaw = std::atan2(-x, -z) * 180.0f / kPi;
+    actor.placeAt(gApp.world.arena(), x, z, yaw);
+}
+
+bool syncRemotePlayers(float dt) {
+    bool changed = false;
+    const auto peers = gApp.lan.peers();
+    std::unordered_set<std::uint32_t> seen;
+    seen.reserve(peers.size());
+
+    for (const auto& peer : peers) {
+        seen.insert(peer.id);
+        auto found = gApp.remotes.find(peer.id);
+        if (found == gApp.remotes.end()) {
+            auto actor = std::make_unique<PokemonActor>();
+            if (!actor->load(gApp.assets, {"/koratta.bch", "/koratta_f.bch"}, {"koratta", "rattata"})) {
+                continue;
+            }
+            placeRemote(*actor, peer.slot);
+            RemoteVisual visual;
+            visual.slot = peer.slot;
+            visual.actor = std::move(actor);
+            found = gApp.remotes.emplace(peer.id, std::move(visual)).first;
+            changed = true;
+        } else if (found->second.slot != peer.slot) {
+            found->second.slot = peer.slot;
+            placeRemote(*found->second.actor, peer.slot);
+            changed = true;
+        }
+
+        found->second.actor->setVerticalOffset(peer.jumpOffset);
+        changed |= found->second.actor->update(dt);
+    }
+
+    for (auto it = gApp.remotes.begin(); it != gApp.remotes.end();) {
+        if (seen.find(it->first) == seen.end()) {
+            if (it->second.actor) it->second.actor->destroy();
+            it = gApp.remotes.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+
+    updateWindowTitle(peers.size());
+    return changed;
 }
 
 void render() {
@@ -100,15 +186,21 @@ void render() {
     gApp.camera.apply(width, height, gApp.world.arena(), gApp.world.minBounds(), gApp.world.maxBounds());
     gApp.world.draw();
     gApp.pokemon.draw();
+    for (const auto& entry : gApp.remotes) {
+        if (entry.second.actor) entry.second.actor->draw();
+    }
     SwapBuffers(gApp.dc);
 }
 
 void update(float dt) {
     bool changed = gApp.pokemon.update(dt);
-    if (gApp.jump.update(dt)) {
-        gApp.pokemon.setVerticalOffset(gApp.jump.offset());
-        changed = true;
-    }
+
+    if (gApp.jump.update(dt)) changed = true;
+    gApp.pokemon.setVerticalOffset(gApp.jump.offset());
+    gApp.lan.setLocalJumpOffset(gApp.jump.offset());
+    changed |= gApp.lan.update(dt);
+    changed |= syncRemotePlayers(dt);
+
     if (changed) InvalidateRect(gApp.hwnd, nullptr, FALSE);
 }
 
@@ -134,16 +226,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"No se pudo cargar Rattata con sus animaciones BCH.", L"Promptemon Stage Jump", MB_OK | MB_ICONERROR);
                 return -1;
             }
+            if (!gApp.lan.start()) {
+                MessageBoxW(hwnd,
+                            L"No se pudo iniciar la sesion LAN UDP de C&C (puertos 8088-8095).",
+                            L"Promptemon Stage Jump", MB_OK | MB_ICONERROR);
+                return -1;
+            }
 
-            // side=0 places the native 1:1 model exactly at the detected arena center.
-            gApp.pokemon.place(gApp.world.arena(), 0.0f, 180.0f);
+            // El jugador local siempre arranca exactamente en el centro del ring, 1:1.
+            gApp.pokemon.placeAt(gApp.world.arena(), 0.0f, 0.0f, 180.0f);
             gApp.jump.reset(gApp.pokemon.nativeHeight());
+            gApp.lan.setLocalJumpOffset(0.0f);
 
-            // Start close to the arena, still using true perspective rather than scaling the world.
+            // Vista cercana dentro del estadio: mover la camara, no escalar el stage.
             gApp.camera.reset(gApp.world.arena());
-            gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
-            gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
+            for (int i = 0; i < 7; ++i) gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
 
+            updateWindowTitle(0);
             gApp.lastTick = GetTickCount64();
             SetTimer(hwnd, kUpdateTimer, 16, nullptr);
             return 0;
@@ -195,8 +294,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         case WM_KEYDOWN:
             if (wParam == 'R') {
                 gApp.camera.reset(gApp.world.arena());
-                gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
-                gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
+                for (int i = 0; i < 7; ++i) gApp.camera.zoom(WHEEL_DELTA, gApp.world.arena());
                 render();
             }
             if (wParam == VK_ESCAPE) DestroyWindow(hwnd);
@@ -235,7 +333,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     wc.lpszClassName = L"PromptemonStageJumpDemo";
     if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Promptemon - Stage Jump Test",
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Promptemon - Stage Jump LAN",
                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1440, 900,
                                 nullptr, nullptr, instance, nullptr);
