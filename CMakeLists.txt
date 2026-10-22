@@ -55,6 +55,7 @@ if(WIN32)
         promptemon_rom
         promptemon_bch
         opengl32
+        glu32
         gdi32
         user32
         shell32
