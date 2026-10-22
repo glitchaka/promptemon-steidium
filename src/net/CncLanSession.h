@@ -1,5 +1,7 @@
 #pragma once
 
+#include "net/CncUdpTransport.h"
+
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -26,7 +28,7 @@ public:
 
     void setLocalJumpOffset(float offset) { localJumpOffset_ = offset; }
 
-    bool running() const { return socket_ != invalidSocket(); }
+    bool running() const { return transport_.running(); }
     std::uint32_t localId() const { return localId_; }
     std::uint8_t localSlot() const { return localSlot_; }
     std::uint16_t localPort() const { return localPort_; }
@@ -39,13 +41,11 @@ private:
         std::uint32_t sequence = 0;
     };
 
-    static std::uintptr_t invalidSocket();
     void sendState(std::uint8_t type);
     void receivePackets();
     void expirePeers();
 
-    std::uintptr_t socket_ = invalidSocket();
-    bool wsaStarted_ = false;
+    CncUdpTransport transport_;
     std::uint32_t localId_ = 0;
     std::uint8_t localSlot_ = 0;
     std::uint16_t localPort_ = 0;
