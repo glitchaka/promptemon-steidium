@@ -44,6 +44,10 @@ endif()
 if(WIN32)
     add_executable(promptemon_demo WIN32
         src/demo/StageSceneWin32.cpp
+        src/demo/SceneRenderSupport.cpp
+        src/demo/CameraController.cpp
+        src/demo/StageWorld.cpp
+        src/demo/PokemonActor.cpp
         src/storage/RomAssetCache.cpp
         src/storage/RomAssetCacheInstalled.cpp
     )
