@@ -74,7 +74,7 @@ jobs:
           promptemon_stage_jump.exe is the isolated enlarged-stage multiplayer jump test:
             - local native-scale Rattata starts exactly at arena center
             - left click jumps
-            - automatic LAN discovery/sync using C&C-style UDP slots 8088-8095
+            - automatic LAN discovery/sync through the original C&C Generals UDP transport on slots 8088-8095
             - remote players appear inside the arena and their jump state is synchronized
             - right-drag rotates camera
             - mouse wheel zooms
