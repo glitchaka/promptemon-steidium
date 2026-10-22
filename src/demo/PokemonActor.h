@@ -17,6 +17,7 @@ public:
     void destroy();
 
     void place(const ArenaView& arena, float side, float yawDegrees);
+    void placeAt(const ArenaView& arena, float normalizedX, float normalizedZ, float yawDegrees);
     bool update(float dt);
     bool move(float rightAmount, float forwardAmount, float cameraYawDegrees, float dt, const ArenaView& arena);
     void draw() const;
