@@ -39,7 +39,6 @@ private:
     bch::Vec3 min_{};
     bch::Vec3 max_{};
     bch::Vec3 position_{};
-    float scale_ = 1.0f;
     float yawDeg_ = 0.0f;
 
     std::size_t idleIndex_ = 0;
