@@ -1,12 +1,9 @@
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
 #include "net/CncLanSession.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <random>
 
@@ -15,17 +12,19 @@ namespace {
 
 constexpr std::uint16_t kBasePort = 8088;
 constexpr std::uint8_t kMaxSlots = 8;
-constexpr std::uint16_t kGeneralsMagic = 0xF00D;
+constexpr std::uint16_t kPromptemonMagic = 0x504D;
 constexpr std::uint8_t kProtocolVersion = 1;
 constexpr std::uint8_t kStatePacket = 1;
 constexpr std::uint8_t kGoodbyePacket = 2;
 constexpr float kSendInterval = 1.0f / 30.0f;
 constexpr std::uint64_t kPeerTimeoutMs = 2500;
+constexpr std::uint32_t kBroadcastIp = 0xFFFFFFFFu;
+constexpr std::uint32_t kLoopbackIp = 0x7F000001u;
 
 #pragma pack(push, 1)
 struct LanPacket {
     std::uint32_t crc = 0;
-    std::uint16_t magic = kGeneralsMagic;
+    std::uint16_t magic = kPromptemonMagic;
     std::uint8_t version = kProtocolVersion;
     std::uint8_t type = kStatePacket;
     std::uint32_t playerId = 0;
@@ -53,15 +52,7 @@ std::uint32_t packetChecksum(const LanPacket& packet) {
     return hash;
 }
 
-bool wouldBlock() {
-    return WSAGetLastError() == WSAEWOULDBLOCK;
-}
-
 } // namespace
-
-std::uintptr_t CncLanSession::invalidSocket() {
-    return static_cast<std::uintptr_t>(INVALID_SOCKET);
-}
 
 CncLanSession::~CncLanSession() {
     stop();
@@ -70,44 +61,17 @@ CncLanSession::~CncLanSession() {
 bool CncLanSession::start() {
     stop();
 
-    WSADATA data{};
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return false;
-    wsaStarted_ = true;
-
-    SOCKET socketHandle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socketHandle == INVALID_SOCKET) {
-        stop();
-        return false;
-    }
-    socket_ = static_cast<std::uintptr_t>(socketHandle);
-
-    BOOL broadcast = TRUE;
-    ::setsockopt(socketHandle, SOL_SOCKET, SO_BROADCAST,
-                 reinterpret_cast<const char*>(&broadcast), sizeof(broadcast));
-
-    u_long nonBlocking = 1;
-    if (::ioctlsocket(socketHandle, FIONBIO, &nonBlocking) != 0) {
-        stop();
-        return false;
-    }
-
     bool bound = false;
     for (std::uint8_t slot = 0; slot < kMaxSlots; ++slot) {
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-        address.sin_port = htons(static_cast<u_short>(kBasePort + slot));
-        if (::bind(socketHandle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
+        const std::uint16_t port = static_cast<std::uint16_t>(kBasePort + slot);
+        if (transport_.start(port)) {
             localSlot_ = slot;
-            localPort_ = static_cast<std::uint16_t>(kBasePort + slot);
+            localPort_ = transport_.localPort();
             bound = true;
             break;
         }
     }
-    if (!bound) {
-        stop();
-        return false;
-    }
+    if (!bound) return false;
 
     std::random_device rd;
     localId_ = (static_cast<std::uint32_t>(rd()) << 1u) ^
@@ -124,10 +88,9 @@ bool CncLanSession::start() {
 }
 
 void CncLanSession::stop() {
-    if (socket_ != invalidSocket()) {
+    if (transport_.running()) {
         sendState(kGoodbyePacket);
-        ::closesocket(static_cast<SOCKET>(socket_));
-        socket_ = invalidSocket();
+        transport_.stop();
     }
     peers_.clear();
     localId_ = 0;
@@ -135,10 +98,6 @@ void CncLanSession::stop() {
     localSlot_ = 0;
     sequence_ = 0;
     sendAccumulator_ = 0.0f;
-    if (wsaStarted_) {
-        WSACleanup();
-        wsaStarted_ = false;
-    }
 }
 
 bool CncLanSession::update(float dtSeconds) {
@@ -168,43 +127,26 @@ void CncLanSession::sendState(std::uint8_t type) {
     packet.jumpOffset = localJumpOffset_;
     packet.crc = packetChecksum(packet);
 
-    const SOCKET socketHandle = static_cast<SOCKET>(socket_);
-    const std::array<std::uint32_t, 2> targets = {
-        htonl(INADDR_BROADCAST),
-        htonl(INADDR_LOOPBACK)
-    };
-
+    const std::array<std::uint32_t, 2> targets = {kBroadcastIp, kLoopbackIp};
     for (const std::uint32_t target : targets) {
         for (std::uint8_t slot = 0; slot < kMaxSlots; ++slot) {
             const std::uint16_t port = static_cast<std::uint16_t>(kBasePort + slot);
-            if (target == htonl(INADDR_LOOPBACK) && port == localPort_) continue;
-
-            sockaddr_in destination{};
-            destination.sin_family = AF_INET;
-            destination.sin_addr.s_addr = target;
-            destination.sin_port = htons(port);
-            ::sendto(socketHandle,
-                     reinterpret_cast<const char*>(&packet), sizeof(packet), 0,
-                     reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+            if (target == kLoopbackIp && port == localPort_) continue;
+            transport_.send(&packet, sizeof(packet), target, port);
         }
     }
 }
 
 void CncLanSession::receivePackets() {
-    const SOCKET socketHandle = static_cast<SOCKET>(socket_);
     for (int iteration = 0; iteration < 128; ++iteration) {
         LanPacket packet{};
-        sockaddr_in source{};
-        int sourceLength = sizeof(source);
-        const int received = ::recvfrom(socketHandle,
-                                        reinterpret_cast<char*>(&packet), sizeof(packet), 0,
-                                        reinterpret_cast<sockaddr*>(&source), &sourceLength);
-        if (received == SOCKET_ERROR) {
-            if (wouldBlock()) break;
-            break;
-        }
-        if (received != sizeof(packet)) continue;
-        if (packet.magic != kGeneralsMagic || packet.version != kProtocolVersion) continue;
+        std::uint32_t sourceIp = 0;
+        std::uint16_t sourcePort = 0;
+        const int received = transport_.receive(
+            &packet, sizeof(packet), sourceIp, sourcePort);
+        if (received <= 0) break;
+        if (received != static_cast<int>(sizeof(packet))) continue;
+        if (packet.magic != kPromptemonMagic || packet.version != kProtocolVersion) continue;
         if (packet.crc != packetChecksum(packet)) continue;
         if (packet.playerId == 0 || packet.playerId == localId_) continue;
         if (packet.slot >= kMaxSlots) continue;
