@@ -2,6 +2,13 @@
 #include "promptemon_resource_packager_v2.cpp"
 #undef main
 
+namespace {
+std::string parentVirtualPath(const std::string& path) {
+    const auto slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string{} : path.substr(0, slash + 1);
+}
+}
+
 int main(int argc, char** argv) {
     try {
         if (argc != 4) {
@@ -32,36 +39,60 @@ int main(int argc, char** argv) {
             {"wanrikii", "machop"}
         }};
 
+        // A Pokemon's model and animation files are commonly siblings with generic
+        // names such as model.bch / anim.bch. Selecting only paths that contain the
+        // species name drops the animation. Find the species-bearing resource first,
+        // then package the complete containing directory.
         for (const auto& keys : speciesKeys) {
-            bool found = false;
+            std::set<std::string> speciesDirectories;
             for (std::size_t i = 0; i < files.size(); ++i) {
                 const auto& p = files[i].lowerPath;
                 if (!startsWith(p, "pii/")) continue;
                 for (const auto& key : keys) {
                     if (p.find(key) != std::string::npos) {
-                        select(i);
-                        found = true;
+                        speciesDirectories.insert(parentVirtualPath(p));
                         break;
                     }
                 }
             }
-            if (!found) throw std::runtime_error("Falta un recurso Pokemon requerido: " + keys.front());
+            if (speciesDirectories.empty()) {
+                throw std::runtime_error("Falta un recurso Pokemon requerido: " + keys.front());
+            }
+
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                const auto& p = files[i].lowerPath;
+                for (const auto& directory : speciesDirectories) {
+                    if (!directory.empty() && startsWith(p, directory.c_str())) {
+                        select(i);
+                        break;
+                    }
+                }
+            }
         }
 
         // Live title/menu scene: use the actual Rumble World Ho-Oh and Lugia models,
-        // plus any animation/motion companions carrying their species names.
+        // plus every companion file in their directories.
         bool foundHoOh = false;
         bool foundLugia = false;
+        std::set<std::string> menuPokemonDirectories;
         for (std::size_t i = 0; i < files.size(); ++i) {
             const auto& p = files[i].lowerPath;
             if (!startsWith(p, "pii/")) continue;
             if (contains(p, "houou")) {
-                select(i);
+                menuPokemonDirectories.insert(parentVirtualPath(p));
                 foundHoOh = true;
             }
             if (contains(p, "rugia") || contains(p, "lugia")) {
-                select(i);
+                menuPokemonDirectories.insert(parentVirtualPath(p));
                 foundLugia = true;
+            }
+        }
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            for (const auto& directory : menuPokemonDirectories) {
+                if (!directory.empty() && startsWith(files[i].lowerPath, directory.c_str())) {
+                    select(i);
+                    break;
+                }
             }
         }
         if (!foundHoOh) throw std::runtime_error("Falta pii/HOUOU para la escena inicial");
@@ -123,6 +154,7 @@ int main(int argc, char** argv) {
         std::cout << "Origen: " << root << '\n';
         std::cout << "Escenarios stage/: " << stageCount << " archivos detectados\n";
         std::cout << "Mii/: " << miiCount << " archivos detectados\n";
+        std::cout << "Pokemon: directorios completos con modelo + animaciones\n";
         std::cout << "Menu 3D: HOUOU + RUGIA\n";
         std::cout << "Fuente: font.arc\n";
         std::cout << "UI: game2d.EU_Spanish.arc + boot2d.arc + recursos UI detectados\n";
