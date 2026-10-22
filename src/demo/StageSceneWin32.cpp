@@ -6,6 +6,7 @@
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
@@ -24,6 +25,8 @@ using promptemon::bch::Vec2;
 using promptemon::bch::Vec3;
 using promptemon::storage::RomAssetCache;
 
+constexpr float kPi = 3.14159265358979323846f;
+
 struct StagePart {
     std::string path;
     std::unique_ptr<Scene> scene;
@@ -32,17 +35,30 @@ struct StagePart {
     Vec3 max{-FLT_MAX, -FLT_MAX, -FLT_MAX};
 };
 
+struct CollisionTriangle {
+    Vec3 a{};
+    Vec3 b{};
+    Vec3 c{};
+};
+
 struct App {
     HWND hwnd = nullptr;
     HDC dc = nullptr;
     HGLRC gl = nullptr;
     RomAssetCache assets;
     std::vector<StagePart> parts;
+    std::vector<CollisionTriangle> collision;
+
     Vec3 stageMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 stageMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
     Vec3 focusMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 focusMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    float zoom = 1.0f;
+
+    float yawDeg = 0.0f;
+    float pitchDeg = 22.0f;
+    float distanceScale = 1.0f;
+    bool dragging = false;
+    POINT lastMouse{};
 };
 
 App gApp;
@@ -81,7 +97,8 @@ bool rejectStagePart(const std::string& path) {
     const std::string leaf = leafName(path);
     return leaf.rfind("attr", 0) == 0 ||
            leaf.rfind("col_", 0) == 0 ||
-           containsAny(leaf, {"collision", "collider", "sky", "skydome", "background", "backdrop", "farbg", "far_", "dummy", "debug"});
+           containsAny(leaf, {"collision", "collider", "sky", "skydome", "background",
+                              "backdrop", "farbg", "far_", "dummy", "debug"});
 }
 
 bool preferredGround(const std::string& path) {
@@ -91,8 +108,8 @@ bool preferredGround(const std::string& path) {
 std::string chooseStageAnchor(const std::vector<std::string>& models) {
     for (const auto& path : models) {
         const std::string p = lowerAscii(path);
-        if (isStageResource(path) && p.find("n001") != std::string::npos && preferredGround(path) && !rejectStagePart(path))
-            return path;
+        if (isStageResource(path) && p.find("n001") != std::string::npos &&
+            preferredGround(path) && !rejectStagePart(path)) return path;
     }
     for (const auto& path : models) {
         const std::string p = lowerAscii(path);
@@ -116,6 +133,38 @@ Vec2 materialUv(const Material* material, Vec2 uv) {
     const float y = uv.y - .5f;
     return {(x * c - y * s + .5f) * material->uvScaleU - material->uvTranslateU,
             (x * s + y * c + .5f) * material->uvScaleV - material->uvTranslateV};
+}
+
+Vec3 subtract(Vec3 a, Vec3 b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+Vec3 add(Vec3 a, Vec3 b) {
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+Vec3 multiply(Vec3 v, float s) {
+    return {v.x * s, v.y * s, v.z * s};
+}
+
+float dot(Vec3 a, Vec3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Vec3 cross(Vec3 a, Vec3 b) {
+    return {a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+}
+
+float vectorLength(Vec3 v) {
+    return std::sqrt(dot(v, v));
+}
+
+Vec3 normalize(Vec3 v) {
+    const float len = vectorLength(v);
+    if (len <= .000001f) return {0, 0, 0};
+    return multiply(v, 1.0f / len);
 }
 
 bool computeBounds(StagePart& part) {
@@ -157,6 +206,20 @@ void uploadTextures(StagePart& part) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void appendCollision(const StagePart& part) {
+    if (!part.scene) return;
+    const auto pose = part.scene->samplePose(nullptr, 0.0f);
+    for (const auto& mesh : part.scene->meshes()) {
+        for (std::size_t i = 0; i + 2 < mesh.vertices.size(); i += 3) {
+            gApp.collision.push_back({
+                part.scene->skin(mesh.vertices[i], pose),
+                part.scene->skin(mesh.vertices[i + 1], pose),
+                part.scene->skin(mesh.vertices[i + 2], pose)
+            });
+        }
+    }
+}
+
 void destroyStage() {
     for (auto& part : gApp.parts) {
         for (const auto& entry : part.textures) {
@@ -165,22 +228,55 @@ void destroyStage() {
         }
     }
     gApp.parts.clear();
+    gApp.collision.clear();
 }
 
 void computeCameraFocus() {
+    constexpr int Grid = 20;
+    std::array<std::size_t, Grid * Grid> density{};
+
+    const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
+    const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
+
+    auto cellFor = [&](const Vec3& p, int& ix, int& iz) {
+        const float nx = std::clamp((p.x - gApp.stageMin.x) / sx, 0.0f, .999999f);
+        const float nz = std::clamp((p.z - gApp.stageMin.z) / sz, 0.0f, .999999f);
+        ix = std::clamp(static_cast<int>(nx * Grid), 0, Grid - 1);
+        iz = std::clamp(static_cast<int>(nz * Grid), 0, Grid - 1);
+    };
+
+    for (auto& part : gApp.parts) {
+        if (!part.scene) continue;
+        const auto pose = part.scene->samplePose(nullptr, 0.0f);
+        for (const auto& mesh : part.scene->meshes()) {
+            for (const auto& vertex : mesh.vertices) {
+                const auto p = part.scene->skin(vertex, pose);
+                int ix = 0, iz = 0;
+                cellFor(p, ix, iz);
+                ++density[iz * Grid + ix];
+            }
+        }
+    }
+
+    std::size_t bestCount = 0;
+    int bestX = Grid / 2;
+    int bestZ = Grid / 2;
+    for (int z = 1; z < Grid - 1; ++z) {
+        for (int x = 1; x < Grid - 1; ++x) {
+            std::size_t count = 0;
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx)
+                    count += density[(z + dz) * Grid + (x + dx)];
+            if (count > bestCount) {
+                bestCount = count;
+                bestX = x;
+                bestZ = z;
+            }
+        }
+    }
+
     gApp.focusMin = {FLT_MAX, FLT_MAX, FLT_MAX};
     gApp.focusMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-
-    const float stageX = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
-    const float stageZ = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
-    const float centerX = (gApp.stageMin.x + gApp.stageMax.x) * .5f;
-    const float centerZ = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
-
-    // The previous camera framed the complete island/map. The playable stadium
-    // sits in the central part of this stage, so the camera target is computed
-    // from geometry in that central footprint instead of from the outer world.
-    const float halfFocusX = stageX * .13f;
-    const float halfFocusZ = stageZ * .13f;
     std::size_t accepted = 0;
 
     for (auto& part : gApp.parts) {
@@ -189,10 +285,9 @@ void computeCameraFocus() {
         for (const auto& mesh : part.scene->meshes()) {
             for (const auto& vertex : mesh.vertices) {
                 const auto p = part.scene->skin(vertex, pose);
-                if (std::abs(p.x - centerX) > halfFocusX ||
-                    std::abs(p.z - centerZ) > halfFocusZ) {
-                    continue;
-                }
+                int ix = 0, iz = 0;
+                cellFor(p, ix, iz);
+                if (std::abs(ix - bestX) > 2 || std::abs(iz - bestZ) > 2) continue;
                 gApp.focusMin.x = std::min(gApp.focusMin.x, p.x);
                 gApp.focusMin.y = std::min(gApp.focusMin.y, p.y);
                 gApp.focusMin.z = std::min(gApp.focusMin.z, p.z);
@@ -204,7 +299,7 @@ void computeCameraFocus() {
         }
     }
 
-    if (accepted < 32 || gApp.focusMin.x == FLT_MAX) {
+    if (accepted < 64 || gApp.focusMin.x == FLT_MAX) {
         gApp.focusMin = gApp.stageMin;
         gApp.focusMax = gApp.stageMax;
     }
@@ -249,27 +344,26 @@ bool loadStage() {
             part.scene = std::move(scene);
             if (!computeBounds(part)) continue;
 
-            const float sx = std::max(0.001f, part.max.x - part.min.x);
-            const float sz = std::max(0.001f, part.max.z - part.min.z);
+            const float px = std::max(.001f, part.max.x - part.min.x);
+            const float pz = std::max(.001f, part.max.z - part.min.z);
             const Vec3 center{(part.min.x + part.max.x) * .5f,
                               (part.min.y + part.max.y) * .5f,
                               (part.min.z + part.max.z) * .5f};
 
             if (!haveAnchorBounds) {
-                anchorX = sx;
-                anchorZ = sz;
+                anchorX = px;
+                anchorZ = pz;
                 anchorCenter = center;
                 haveAnchorBounds = true;
             } else {
                 const float dx = std::abs(center.x - anchorCenter.x);
                 const float dz = std::abs(center.z - anchorCenter.z);
-                if (sx > anchorX * 4.0f || sz > anchorZ * 4.0f ||
-                    dx > anchorX * 2.5f || dz > anchorZ * 2.5f) {
-                    continue;
-                }
+                if (px > anchorX * 4.0f || pz > anchorZ * 4.0f ||
+                    dx > anchorX * 2.5f || dz > anchorZ * 2.5f) continue;
             }
 
             uploadTextures(part);
+            appendCollision(part);
             gApp.stageMin.x = std::min(gApp.stageMin.x, part.min.x);
             gApp.stageMin.y = std::min(gApp.stageMin.y, part.min.y);
             gApp.stageMin.z = std::min(gApp.stageMin.z, part.min.z);
@@ -325,39 +419,72 @@ void drawPart(StagePart& part) {
     glDisable(GL_TEXTURE_2D);
 }
 
-Vec3 subtract(Vec3 a, Vec3 b) {
-    return {a.x - b.x, a.y - b.y, a.z - b.z};
+bool rayTriangle(Vec3 origin, Vec3 dir, const CollisionTriangle& tri, float& tOut) {
+    constexpr float Epsilon = 0.000001f;
+    const Vec3 edge1 = subtract(tri.b, tri.a);
+    const Vec3 edge2 = subtract(tri.c, tri.a);
+    const Vec3 p = cross(dir, edge2);
+    const float det = dot(edge1, p);
+    if (std::abs(det) < Epsilon) return false;
+
+    const float invDet = 1.0f / det;
+    const Vec3 s = subtract(origin, tri.a);
+    const float u = dot(s, p) * invDet;
+    if (u < 0.0f || u > 1.0f) return false;
+
+    const Vec3 q = cross(s, edge1);
+    const float v = dot(dir, q) * invDet;
+    if (v < 0.0f || u + v > 1.0f) return false;
+
+    const float t = dot(edge2, q) * invDet;
+    if (t <= Epsilon) return false;
+    tOut = t;
+    return true;
 }
 
-float length(Vec3 v) {
-    return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-}
+Vec3 collideCamera(Vec3 target, Vec3 desiredEye, float span) {
+    Vec3 ray = subtract(desiredEye, target);
+    const float desiredDistance = vectorLength(ray);
+    if (desiredDistance <= .0001f || gApp.collision.empty()) return desiredEye;
 
-Vec3 normalize(Vec3 v) {
-    const float len = length(v);
-    if (len <= .000001f) return {0, 0, 0};
-    return {v.x / len, v.y / len, v.z / len};
-}
+    const Vec3 dir = multiply(ray, 1.0f / desiredDistance);
+    const float ignoreNearTarget = std::max(span * .10f, desiredDistance * .05f);
+    float nearest = desiredDistance;
 
-Vec3 cross(Vec3 a, Vec3 b) {
-    return {a.y * b.z - a.z * b.y,
-            a.z * b.x - a.x * b.z,
-            a.x * b.y - a.y * b.x};
+    for (const auto& tri : gApp.collision) {
+        float t = 0.0f;
+        if (!rayTriangle(target, dir, tri, t)) continue;
+        if (t <= ignoreNearTarget || t >= nearest) continue;
+        nearest = t;
+    }
+
+    if (nearest >= desiredDistance) return desiredEye;
+    const float padding = std::max(span * .025f, desiredDistance * .015f);
+    const float safeDistance = std::max(ignoreNearTarget, nearest - padding);
+    return add(target, multiply(dir, safeDistance));
 }
 
 void applyLookAt(Vec3 eye, Vec3 target) {
     const Vec3 forward = normalize(subtract(target, eye));
-    const Vec3 side = normalize(cross(forward, {0, 1, 0}));
+    Vec3 side = normalize(cross(forward, {0, 1, 0}));
+    if (vectorLength(side) < .0001f) side = {1, 0, 0};
     const Vec3 up = cross(side, forward);
 
+    // glMultMatrixf is column-major.
     const GLfloat matrix[16] = {
-        side.x,    up.x,    -forward.x, 0,
-        side.y,    up.y,    -forward.y, 0,
-        side.z,    up.z,    -forward.z, 0,
-        0,         0,        0,         1
+        side.x, side.y, side.z, 0,
+        up.x, up.y, up.z, 0,
+        -forward.x, -forward.y, -forward.z, 0,
+        0, 0, 0, 1
     };
     glMultMatrixf(matrix);
     glTranslatef(-eye.x, -eye.y, -eye.z);
+}
+
+void resetCamera() {
+    gApp.yawDeg = 0.0f;
+    gApp.pitchDeg = 22.0f;
+    gApp.distanceScale = 1.0f;
 }
 
 void render() {
@@ -382,32 +509,35 @@ void render() {
         const float fx = std::max(.001f, gApp.focusMax.x - gApp.focusMin.x);
         const float fy = std::max(.001f, gApp.focusMax.y - gApp.focusMin.y);
         const float fz = std::max(.001f, gApp.focusMax.z - gApp.focusMin.z);
-        const float span = std::max(fx, fz);
+        const float span = std::max({fx, fz, .001f});
 
         const Vec3 target{
             (gApp.focusMin.x + gApp.focusMax.x) * .5f,
-            gApp.focusMin.y + std::max(fy * .20f, span * .035f),
+            gApp.focusMin.y + std::max(fy * .18f, span * .025f),
             (gApp.focusMin.z + gApp.focusMax.z) * .5f
         };
 
-        // Low, close stadium camera. This is intentionally inside the playable
-        // area instead of above the entire stage/island.
-        const float distanceScale = 1.0f / std::max(.65f, gApp.zoom);
-        const Vec3 eye{
-            target.x + span * .62f * distanceScale,
-            target.y + span * .42f * distanceScale,
-            target.z + span * .88f * distanceScale
+        const float yaw = gApp.yawDeg * kPi / 180.0f;
+        const float pitch = gApp.pitchDeg * kPi / 180.0f;
+        const float distance = std::max(span * 1.55f, .5f) * gApp.distanceScale;
+        const float horizontal = std::cos(pitch) * distance;
+        const Vec3 desiredEye{
+            target.x + std::sin(yaw) * horizontal,
+            target.y + std::sin(pitch) * distance,
+            target.z + std::cos(yaw) * horizontal
         };
+        const Vec3 eye = collideCamera(target, desiredEye, span);
 
         const float stageX = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
         const float stageY = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
         const float stageZ = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
         const float stageDiag = std::sqrt(stageX * stageX + stageY * stageY + stageZ * stageZ);
+        const float eyeDistance = std::max(.01f, vectorLength(subtract(eye, target)));
 
-        const float fovY = 48.0f;
-        const float nearPlane = std::max(.01f, span * .004f);
-        const float farPlane = std::max(stageDiag * 3.0f, span * 20.0f);
-        const float top = nearPlane * std::tan(fovY * 3.1415926535f / 360.0f);
+        const float fovY = 52.0f;
+        const float nearPlane = std::max(.005f, eyeDistance * .005f);
+        const float farPlane = std::max(eyeDistance + stageDiag * 3.0f, 100.0f);
+        const float top = nearPlane * std::tan(fovY * kPi / 360.0f);
         const float right = top * aspect;
 
         glMatrixMode(GL_PROJECTION);
@@ -482,27 +612,56 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd, L"El bundle no contiene un stage BCH utilizable.", L"Promptemon Steidium", MB_OK | MB_ICONERROR);
                 return -1;
             }
+            resetCamera();
             return 0;
         }
         case WM_SIZE:
+            render();
+            return 0;
         case WM_PAINT: {
-            if (message == WM_PAINT) {
-                PAINTSTRUCT ps{};
-                BeginPaint(hwnd, &ps);
-                render();
-                EndPaint(hwnd, &ps);
-            } else {
-                render();
-            }
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            render();
+            EndPaint(hwnd, &ps);
             return 0;
         }
+        case WM_LBUTTONDOWN: {
+            gApp.dragging = true;
+            gApp.lastMouse = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            SetCapture(hwnd);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            if (!gApp.dragging) return 0;
+            POINT now{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const int dx = now.x - gApp.lastMouse.x;
+            const int dy = now.y - gApp.lastMouse.y;
+            gApp.lastMouse = now;
+            gApp.yawDeg += static_cast<float>(dx) * .35f;
+            gApp.pitchDeg = std::clamp(gApp.pitchDeg - static_cast<float>(dy) * .28f, 5.0f, 72.0f);
+            render();
+            return 0;
+        }
+        case WM_LBUTTONUP:
+            gApp.dragging = false;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            gApp.dragging = false;
+            return 0;
         case WM_MOUSEWHEEL: {
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.08f : .925f), .65f, 2.0f);
+            const float factor = delta > 0 ? .86f : 1.16f;
+            gApp.distanceScale = std::clamp(gApp.distanceScale * factor, .22f, 4.0f);
             render();
             return 0;
         }
         case WM_KEYDOWN:
+            if (wParam == 'R') {
+                resetCamera();
+                render();
+                return 0;
+            }
             if (wParam == VK_ESCAPE) DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
