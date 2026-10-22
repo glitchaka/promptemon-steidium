@@ -39,7 +39,7 @@ struct App {
     std::vector<StagePart> parts;
     Vec3 stageMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 stageMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    float zoom = 3.0f;
+    float zoom = 4.5f;
 };
 
 App gApp;
@@ -403,7 +403,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         case WM_MOUSEWHEEL: {
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.12f : .89f), .75f, 6.0f);
+            gApp.zoom = std::clamp(gApp.zoom * (delta > 0 ? 1.18f : .85f), .5f, 20.0f);
             render();
             return 0;
         }
