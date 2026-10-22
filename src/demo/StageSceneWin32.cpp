@@ -6,6 +6,7 @@
 #include "storage/RomAssetCache.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
@@ -39,6 +40,8 @@ struct App {
     std::vector<StagePart> parts;
     Vec3 stageMin{FLT_MAX, FLT_MAX, FLT_MAX};
     Vec3 stageMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    Vec3 focusMin{FLT_MAX, FLT_MAX, FLT_MAX};
+    Vec3 focusMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
     float zoom = 1.0f;
 };
 
@@ -86,8 +89,6 @@ bool preferredGround(const std::string& path) {
 }
 
 std::string chooseStageAnchor(const std::vector<std::string>& models) {
-    // Use a concrete Rumble World stage first. N001 is the first normal stage
-    // family in the extracted resources and is stable across the installed bundle.
     for (const auto& path : models) {
         const std::string p = lowerAscii(path);
         if (isStageResource(path) && p.find("n001") != std::string::npos && preferredGround(path) && !rejectStagePart(path))
@@ -166,6 +167,49 @@ void destroyStage() {
     gApp.parts.clear();
 }
 
+void computeCameraFocus() {
+    gApp.focusMin = {FLT_MAX, FLT_MAX, FLT_MAX};
+    gApp.focusMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+    const float stageX = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
+    const float stageZ = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
+    const float centerX = (gApp.stageMin.x + gApp.stageMax.x) * .5f;
+    const float centerZ = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
+
+    // The previous camera framed the complete island/map. The playable stadium
+    // sits in the central part of this stage, so the camera target is computed
+    // from geometry in that central footprint instead of from the outer world.
+    const float halfFocusX = stageX * .13f;
+    const float halfFocusZ = stageZ * .13f;
+    std::size_t accepted = 0;
+
+    for (auto& part : gApp.parts) {
+        if (!part.scene) continue;
+        const auto pose = part.scene->samplePose(nullptr, 0.0f);
+        for (const auto& mesh : part.scene->meshes()) {
+            for (const auto& vertex : mesh.vertices) {
+                const auto p = part.scene->skin(vertex, pose);
+                if (std::abs(p.x - centerX) > halfFocusX ||
+                    std::abs(p.z - centerZ) > halfFocusZ) {
+                    continue;
+                }
+                gApp.focusMin.x = std::min(gApp.focusMin.x, p.x);
+                gApp.focusMin.y = std::min(gApp.focusMin.y, p.y);
+                gApp.focusMin.z = std::min(gApp.focusMin.z, p.z);
+                gApp.focusMax.x = std::max(gApp.focusMax.x, p.x);
+                gApp.focusMax.y = std::max(gApp.focusMax.y, p.y);
+                gApp.focusMax.z = std::max(gApp.focusMax.z, p.z);
+                ++accepted;
+            }
+        }
+    }
+
+    if (accepted < 32 || gApp.focusMin.x == FLT_MAX) {
+        gApp.focusMin = gApp.stageMin;
+        gApp.focusMax = gApp.stageMax;
+    }
+}
+
 bool loadStage() {
     const auto models = gApp.assets.modelResources();
     const std::string anchor = chooseStageAnchor(models);
@@ -180,8 +224,6 @@ bool loadStage() {
     }
     if (candidates.empty()) candidates.push_back(anchor);
 
-    // Parse the ground first so oversized decorative/backdrop geometry cannot
-    // dictate the scale of the playable stage.
     std::stable_sort(candidates.begin(), candidates.end(), [&](const std::string& a, const std::string& b) {
         if (a == anchor) return true;
         if (b == anchor) return false;
@@ -192,7 +234,6 @@ bool loadStage() {
     gApp.stageMin = {FLT_MAX, FLT_MAX, FLT_MAX};
     gApp.stageMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
 
-    StagePart anchorPart;
     bool haveAnchorBounds = false;
     float anchorX = 0.0f;
     float anchorZ = 0.0f;
@@ -220,8 +261,6 @@ bool loadStage() {
                 anchorCenter = center;
                 haveAnchorBounds = true;
             } else {
-                // Keep pieces belonging to the stage footprint, but reject huge
-                // environment shells that previously made the actual terrain tiny.
                 const float dx = std::abs(center.x - anchorCenter.x);
                 const float dz = std::abs(center.z - anchorCenter.z);
                 if (sx > anchorX * 4.0f || sz > anchorZ * 4.0f ||
@@ -242,7 +281,9 @@ bool loadStage() {
         }
     }
 
-    return !gApp.parts.empty();
+    if (gApp.parts.empty()) return false;
+    computeCameraFocus();
+    return true;
 }
 
 void drawPart(StagePart& part) {
@@ -284,6 +325,41 @@ void drawPart(StagePart& part) {
     glDisable(GL_TEXTURE_2D);
 }
 
+Vec3 subtract(Vec3 a, Vec3 b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+float length(Vec3 v) {
+    return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+Vec3 normalize(Vec3 v) {
+    const float len = length(v);
+    if (len <= .000001f) return {0, 0, 0};
+    return {v.x / len, v.y / len, v.z / len};
+}
+
+Vec3 cross(Vec3 a, Vec3 b) {
+    return {a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+}
+
+void applyLookAt(Vec3 eye, Vec3 target) {
+    const Vec3 forward = normalize(subtract(target, eye));
+    const Vec3 side = normalize(cross(forward, {0, 1, 0}));
+    const Vec3 up = cross(side, forward);
+
+    const GLfloat matrix[16] = {
+        side.x,    up.x,    -forward.x, 0,
+        side.y,    up.y,    -forward.y, 0,
+        side.z,    up.z,    -forward.z, 0,
+        0,         0,        0,         1
+    };
+    glMultMatrixf(matrix);
+    glTranslatef(-eye.x, -eye.y, -eye.z);
+}
+
 void render() {
     if (!gApp.hwnd || !gApp.gl) return;
     wglMakeCurrent(gApp.dc, gApp.gl);
@@ -302,36 +378,45 @@ void render() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    const float halfH = 10.0f;
-    const float halfW = halfH * aspect;
-    glOrtho(-halfW, halfW, -halfH, halfH, -200.0f, 200.0f);
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-
     if (!gApp.parts.empty()) {
-        const float sx = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
-        const float sy = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
-        const float sz = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
-        const float projectedHeight = std::max(.001f, sy * .58f + sz * .82f);
+        const float fx = std::max(.001f, gApp.focusMax.x - gApp.focusMin.x);
+        const float fy = std::max(.001f, gApp.focusMax.y - gApp.focusMin.y);
+        const float fz = std::max(.001f, gApp.focusMax.z - gApp.focusMin.z);
+        const float span = std::max(fx, fz);
 
-        // Fill almost the entire client area. The previous renderer fitted the
-        // stage to a tiny fraction of the viewport because sky/backdrop bounds
-        // were included. This fit is intentionally aggressive.
-        const float fitX = (halfW * 2.0f * .96f) / sx;
-        const float fitY = (halfH * 2.0f * .94f) / projectedHeight;
-        const float fit = std::min(fitX, fitY) * gApp.zoom;
+        const Vec3 target{
+            (gApp.focusMin.x + gApp.focusMax.x) * .5f,
+            gApp.focusMin.y + std::max(fy * .20f, span * .035f),
+            (gApp.focusMin.z + gApp.focusMax.z) * .5f
+        };
 
-        const float cx = (gApp.stageMin.x + gApp.stageMax.x) * .5f;
-        const float cy = (gApp.stageMin.y + gApp.stageMax.y) * .5f;
-        const float cz = (gApp.stageMin.z + gApp.stageMax.z) * .5f;
+        // Low, close stadium camera. This is intentionally inside the playable
+        // area instead of above the entire stage/island.
+        const float distanceScale = 1.0f / std::max(.65f, gApp.zoom);
+        const Vec3 eye{
+            target.x + span * .62f * distanceScale,
+            target.y + span * .42f * distanceScale,
+            target.z + span * .88f * distanceScale
+        };
 
-        glScalef(fit, fit, fit);
-        glRotatef(55.0f, 1, 0, 0);
-        glRotatef(-45.0f, 0, 1, 0);
-        glTranslatef(-cx, -cy, -cz);
+        const float stageX = std::max(.001f, gApp.stageMax.x - gApp.stageMin.x);
+        const float stageY = std::max(.001f, gApp.stageMax.y - gApp.stageMin.y);
+        const float stageZ = std::max(.001f, gApp.stageMax.z - gApp.stageMin.z);
+        const float stageDiag = std::sqrt(stageX * stageX + stageY * stageY + stageZ * stageZ);
+
+        const float fovY = 48.0f;
+        const float nearPlane = std::max(.01f, span * .004f);
+        const float farPlane = std::max(stageDiag * 3.0f, span * 20.0f);
+        const float top = nearPlane * std::tan(fovY * 3.1415926535f / 360.0f);
+        const float right = top * aspect;
+
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glFrustum(-right, right, -top, top, nearPlane, farPlane);
+
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        applyLookAt(eye, target);
 
         for (auto& part : gApp.parts) drawPart(part);
     }
