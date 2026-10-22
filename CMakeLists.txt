@@ -21,6 +21,7 @@ target_include_directories(promptemon_rom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 add_library(promptemon_bch
     src/bch/BchScene.cpp
     src/ctr/CtrTexture.cpp
+    src/ctr/Bclim.cpp
 )
 target_include_directories(promptemon_bch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
