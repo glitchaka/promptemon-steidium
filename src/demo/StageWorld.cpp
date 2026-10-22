@@ -39,6 +39,23 @@ std::string chooseStageAnchor(const std::vector<std::string>& models) {
     return {};
 }
 
+struct PlanePatch {
+    int triangles = 0;
+    double sumY = 0.0;
+    double area = 0.0;
+    float minX = FLT_MAX;
+    float maxX = -FLT_MAX;
+    float minZ = FLT_MAX;
+    float maxZ = -FLT_MAX;
+};
+
+void includePoint(PlanePatch& patch, const bch::Vec3& p) {
+    patch.minX = std::min(patch.minX, p.x);
+    patch.maxX = std::max(patch.maxX, p.x);
+    patch.minZ = std::min(patch.minZ, p.z);
+    patch.maxZ = std::max(patch.maxZ, p.z);
+}
+
 } // namespace
 
 bool StageWorld::load(storage::RomAssetCache& assets) {
@@ -127,42 +144,115 @@ void StageWorld::computeArena() {
     const float sx = std::max(.001f, max_.x - min_.x);
     const float sy = std::max(.001f, max_.y - min_.y);
     const float sz = std::max(.001f, max_.z - min_.z);
-    const float cx = (min_.x + max_.x) * .5f;
-    const float cz = (min_.z + max_.z) * .5f;
+    const float worldCx = (min_.x + max_.x) * .5f;
+    const float worldCz = (min_.z + max_.z) * .5f;
+    const float quantum = std::max(.0001f, sy * .003f);
 
-    arena_.halfX = sx * .24f;
-    arena_.halfZ = sz * .24f;
-    arena_.center = {cx, 0.0f, cz};
-
-    const float quantum = std::max(.0001f, sy * .001f);
-    struct Bucket { int count = 0; double sum = 0.0; };
-    std::unordered_map<long long, Bucket> buckets;
+    bool found = false;
+    float bestScore = -FLT_MAX;
+    PlanePatch bestPatch{};
+    float bestFloorY = min_.y;
 
     for (const auto& part : parts_) {
         if (!part.scene) continue;
         const auto pose = part.scene->samplePose(nullptr, 0.0f);
+
         for (const auto& mesh : part.scene->meshes()) {
-            for (const auto& vertex : mesh.vertices) {
-                const auto p = part.scene->skin(vertex, pose);
-                if (std::abs(p.x - cx) > arena_.halfX * .86f || std::abs(p.z - cz) > arena_.halfZ * .86f) continue;
-                const long long key = static_cast<long long>(std::llround(p.y / quantum));
-                auto& bucket = buckets[key];
-                ++bucket.count;
-                bucket.sum += p.y;
+            std::unordered_map<long long, PlanePatch> planes;
+            const auto& vertices = mesh.vertices;
+
+            for (std::size_t i = 0; i + 2 < vertices.size(); i += 3) {
+                const bch::Vec3 a = part.scene->skin(vertices[i], pose);
+                const bch::Vec3 b = part.scene->skin(vertices[i + 1], pose);
+                const bch::Vec3 c = part.scene->skin(vertices[i + 2], pose);
+
+                const float abx = b.x - a.x;
+                const float aby = b.y - a.y;
+                const float abz = b.z - a.z;
+                const float acx = c.x - a.x;
+                const float acy = c.y - a.y;
+                const float acz = c.z - a.z;
+
+                const float nx = aby * acz - abz * acy;
+                const float ny = abz * acx - abx * acz;
+                const float nz = abx * acy - aby * acx;
+                const float normalLength = std::sqrt(nx * nx + ny * ny + nz * nz);
+                if (normalLength <= 1.0e-7f) continue;
+
+                // Arena floor triangles are almost horizontal. Walls, ramps and the
+                // exterior shell are deliberately ignored here.
+                if (std::abs(ny) / normalLength < .94f) continue;
+
+                const float averageY = (a.y + b.y + c.y) / 3.0f;
+                const long long key = static_cast<long long>(std::llround(averageY / quantum));
+                auto& patch = planes[key];
+                ++patch.triangles;
+                patch.sumY += averageY;
+                patch.area += normalLength * .5;
+                includePoint(patch, a);
+                includePoint(patch, b);
+                includePoint(patch, c);
+            }
+
+            for (const auto& [key, patch] : planes) {
+                (void)key;
+                if (patch.triangles < 2) continue;
+
+                const float width = patch.maxX - patch.minX;
+                const float depth = patch.maxZ - patch.minZ;
+                if (width <= 0.0f || depth <= 0.0f) continue;
+
+                const float rx = width / sx;
+                const float rz = depth / sz;
+                if (rx < .08f || rz < .08f || rx > .70f || rz > .70f) continue;
+
+                const float cx = (patch.minX + patch.maxX) * .5f;
+                const float cz = (patch.minZ + patch.maxZ) * .5f;
+                const float dx = std::abs(cx - worldCx) / (sx * .5f);
+                const float dz = std::abs(cz - worldCz) / (sz * .5f);
+                if (dx > .38f || dz > .38f) continue;
+
+                const float distance = std::sqrt(dx * dx + dz * dz);
+                const float centrality = 1.0f - std::clamp(distance, 0.0f, 1.0f);
+                const float footprint = rx * rz;
+
+                // The playable rectangle is a central inset of the stadium, not the
+                // outer deck. Prefer a medium central footprint instead of the largest
+                // horizontal surface in the model.
+                const float sizeFit = 1.0f - std::min(1.0f, std::abs(footprint - .16f) / .16f);
+                const float triangleDensity = std::min(1.0f, static_cast<float>(patch.triangles) / 64.0f);
+                const float floorY = static_cast<float>(patch.sumY / patch.triangles);
+                const float elevation = std::clamp((floorY - min_.y) / sy, 0.0f, 1.0f);
+                const float score = centrality * 8.0f + sizeFit * 4.0f + triangleDensity + elevation * .5f;
+
+                if (!found || score > bestScore) {
+                    found = true;
+                    bestScore = score;
+                    bestPatch = patch;
+                    bestFloorY = floorY;
+                }
             }
         }
     }
 
-    int bestCount = 0;
-    float bestY = min_.y;
-    for (const auto& entry : buckets) {
-        if (entry.second.count > bestCount) {
-            bestCount = entry.second.count;
-            bestY = static_cast<float>(entry.second.sum / entry.second.count);
-        }
+    if (found) {
+        const float width = bestPatch.maxX - bestPatch.minX;
+        const float depth = bestPatch.maxZ - bestPatch.minZ;
+        arena_.center = {(bestPatch.minX + bestPatch.maxX) * .5f,
+                         bestFloorY,
+                         (bestPatch.minZ + bestPatch.maxZ) * .5f};
+        // Keep actors clear of the black rim/walls surrounding the actual floor.
+        arena_.halfX = width * .44f;
+        arena_.halfZ = depth * .44f;
+        arena_.floorY = bestFloorY;
+        return;
     }
-    arena_.floorY = bestY;
-    arena_.center.y = bestY;
+
+    // Conservative fallback only if the model does not expose a usable planar mesh.
+    arena_.center = {worldCx, min_.y, worldCz};
+    arena_.halfX = sx * .12f;
+    arena_.halfZ = sz * .12f;
+    arena_.floorY = min_.y;
 }
 
 } // namespace promptemon::demo
