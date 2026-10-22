@@ -18,6 +18,44 @@ jobs:
       - name: Build demo and resource tools
         run: cmake --build build --config Release --target promptemon_demo promptemon_resource_packager promptemon_resource_sfx
 
+      - name: Verify Pokemon animation companions are packaged
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'bundle-test/resources-tx/files/romfs'
+          $species = @('KORATTA','POPPO','KYATAPI','BIIDORU','ZUBATTO','ISHITSUBUTE','GOOSU','WANRIKII','HOUOU','RUGIA')
+          foreach ($name in $species) {
+            $dir = Join-Path $root "pii/$name"
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            [IO.File]::WriteAllBytes((Join-Path $dir 'model.bch'), [byte[]](0x42,0x43,0x48,0x00))
+            [IO.File]::WriteAllBytes((Join-Path $dir 'anim.bch'), [byte[]](0x42,0x43,0x48,0x00))
+          }
+          New-Item -ItemType Directory -Force (Join-Path $root 'mii') | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $root 'mii/mii.bch'), [byte[]](0x42))
+          New-Item -ItemType Directory -Force (Join-Path $root 'stage/test') | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $root 'stage/test/stage.bch'), [byte[]](0x42))
+          [IO.File]::WriteAllBytes((Join-Path $root 'font.arc'), [byte[]](0x46))
+          [IO.File]::WriteAllBytes((Join-Path $root 'game2d.EU_Spanish.arc'), [byte[]](0x47))
+
+          $installer = Join-Path $PWD 'bundle-test/PromptemonResources.exe'
+          & build/Release/promptemon_resource_packager.exe (Join-Path $PWD 'bundle-test/resources-tx') build/Release/promptemon_resource_sfx.exe $installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $installed = Join-Path $PWD 'bundle-test/installed'
+          & $installer $installed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $required = @(
+            'files/romfs/pii/KORATTA/model.bch',
+            'files/romfs/pii/KORATTA/anim.bch',
+            'files/romfs/pii/POPPO/model.bch',
+            'files/romfs/pii/POPPO/anim.bch'
+          )
+          foreach ($relative in $required) {
+            if (-not (Test-Path (Join-Path $installed $relative))) {
+              throw "Missing packaged companion: $relative"
+            }
+          }
+
       - name: Package
         shell: pwsh
         run: |
