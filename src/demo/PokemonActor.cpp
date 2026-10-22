@@ -191,13 +191,8 @@ bool PokemonActor::update(float dt) {
 
 void PokemonActor::place(const ArenaView& arena, float side, float yawDegrees) {
     if (!scene_) return;
-    const float arenaWidth = std::max(.001f, arena.halfX * 2.0f);
-    const float arenaDepth = std::max(.001f, arena.halfZ * 2.0f);
-    const float targetHeight = std::min(arenaWidth, arenaDepth) * .18f;
-    const float height = std::max(.001f, max_.y - min_.y);
-    scale_ = targetHeight / height;
     position_ = {arena.center.x + side * arena.halfX * .36f,
-                 arena.floorY + targetHeight * .02f,
+                 arena.floorY,
                  arena.center.z};
     yawDeg_ = yawDegrees;
 }
@@ -225,7 +220,6 @@ void PokemonActor::draw() const {
     glPushMatrix();
     glTranslatef(position_.x, position_.y, position_.z);
     glRotatef(yawDeg_, 0, 1, 0);
-    glScalef(scale_, scale_, scale_);
     glTranslatef(-cx, -min_.y, -cz);
     drawScene(*scene_, textures_, materialTextures_, currentAnimation(), frame_);
     glPopMatrix();
