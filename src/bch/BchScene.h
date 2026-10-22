@@ -48,8 +48,7 @@ struct Texture {
 
 struct Material {
     std::string name;
-    std::string textureName; // Slot 0 kept for compatibility.
-    std::array<std::string, 3> textureNames{};
+    std::string textureName;
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;
     float uvRotation = 0.0f;
