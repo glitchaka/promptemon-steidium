@@ -42,20 +42,21 @@ if(MSVC)
 endif()
 
 if(WIN32)
-    add_executable(promptemon_demo WIN32
-        src/demo/StageSceneWin32.cpp
+    add_library(promptemon_demo_core
         src/demo/SceneRenderSupport.cpp
         src/demo/CameraController.cpp
         src/demo/StageWorld.cpp
         src/demo/PokemonActor.cpp
+        src/demo/JumpController.cpp
         src/storage/RomAssetCache.cpp
         src/storage/RomAssetCacheInstalled.cpp
     )
-    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
+    target_include_directories(promptemon_demo_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(promptemon_demo_core PUBLIC NOMINMAX UNICODE _UNICODE)
     if(MSVC)
-        target_compile_options(promptemon_demo PRIVATE /utf-8)
+        target_compile_options(promptemon_demo_core PRIVATE /utf-8)
     endif()
-    target_link_libraries(promptemon_demo PRIVATE
+    target_link_libraries(promptemon_demo_core PUBLIC
         promptemon_rom
         promptemon_bch
         opengl32
@@ -64,4 +65,24 @@ if(WIN32)
         user32
         shell32
     )
+
+    add_executable(promptemon_demo WIN32
+        src/demo/StageSceneWin32.cpp
+    )
+    target_compile_definitions(promptemon_demo PRIVATE NOMINMAX UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(promptemon_demo PRIVATE /utf-8)
+    endif()
+    target_link_libraries(promptemon_demo PRIVATE promptemon_demo_core)
+
+    # Minimal alternative executable: enlarged stage view, one native-scale
+    # Pokemon at arena center, left-click jump. Kept separate from promptemon_demo.
+    add_executable(promptemon_stage_jump WIN32
+        src/demo/StageJumpDemoWin32.cpp
+    )
+    target_compile_definitions(promptemon_stage_jump PRIVATE NOMINMAX UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(promptemon_stage_jump PRIVATE /utf-8)
+    endif()
+    target_link_libraries(promptemon_stage_jump PRIVATE promptemon_demo_core)
 endif()
