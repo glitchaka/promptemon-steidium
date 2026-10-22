@@ -13,11 +13,18 @@ bool endsWith(const std::string& value, const std::string& suffix) {
     return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+std::string resourceFamily(std::string path) {
+    path = lowerAscii(std::move(path));
+    const auto nested = path.find("::");
+    if (nested != std::string::npos) return path.substr(0, nested + 2);
+    return parentPath(path);
+}
+
 bool isAnimationCandidate(const std::string& path, const std::string& modelPath) {
     const std::string p = lowerAscii(path);
     if (p == lowerAscii(modelPath)) return false;
     if (!(endsWith(p, ".bch") || endsWith(p, ".bch.cx"))) return false;
-    return p.rfind(parentPath(lowerAscii(modelPath)), 0) == 0;
+    return resourceFamily(p) == resourceFamily(modelPath);
 }
 
 std::string findModel(storage::RomAssetCache& assets,
@@ -94,10 +101,10 @@ bool PokemonActor::load(storage::RomAssetCache& assets,
         }
 
         uploadSceneTextures(textures_, *scene_);
-        const std::string directory = parentPath(lowerAscii(path_));
+        const std::string family = resourceFamily(path_);
         for (const auto& resource : assets.resources()) {
             const std::string p = lowerAscii(resource);
-            if (!isPokemonResource(resource) || p.rfind(directory, 0) != 0) continue;
+            if (!isPokemonResource(resource) || resourceFamily(p) != family) continue;
             if (!(endsWith(p, ".bch") || endsWith(p, ".bch.cx"))) continue;
             try {
                 const auto raw = assets.extractResource(resource);
@@ -106,7 +113,7 @@ bool PokemonActor::load(storage::RomAssetCache& assets,
             } catch (...) {
             }
         }
-        loadExternalTextures(assets, textures_, isPokemonResource, directory);
+        loadExternalTextures(assets, textures_, isPokemonResource, parentPath(lowerAscii(path_)));
         configureAnimationCycle();
         return true;
     } catch (...) {
